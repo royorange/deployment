@@ -82,6 +82,8 @@ PAT 默认只保存在本次内存，不会导出到应用变量、GitHub 或项
 
 命令、包名和 `~/.config/project-setup` 命名均保持兼容。公开状态按真实项目根、仓库、项目与 staging/production 环境隔离；同仓库的不同 checkout 不共享绑定。旧共享状态可确认复制到新路径，原文件保留。
 
+状态页区分本机已载入、GitHub Environment 已配置（Secret 只确认名称，值不可读取）、已确认缺失和云端未知。只有明确绑定 GitHub 仓库后，才只读检查所选环境的 Variable/Secret 名称；不会读取 Secret 值或把它写入本地状态。每次刷新清除旧快照，读取前后核验 GitHub 身份和仓库。查询失败不沿用旧的“已配置”结论；Environment 级缺失不代表仓库或组织级配置缺失。
+
 默认只保存公开配置与账号/profile 绑定。`--memory` 不读项目注册记录/绑定、不自动保存；显式初始化配置文件或选择导出仍可写入目标。`--vault` 只加密主动输入的额外凭据，不复制官方 CLI 登录 Token。
 
 本地 `.env` 导入/导出要求目标在项目内、Git 未跟踪且已忽略；不会自动修改 `.gitignore`。只解析单行 dotenv，不执行插值或 shell。不要将导出文件作为 shell 脚本执行。剪贴板是明文，请按需清理历史；GitHub Secrets 无法回读。GitHub 同步仅写明确选中的项，不自动触发业务部署，不替换环境保护规则。

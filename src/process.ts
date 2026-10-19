@@ -185,11 +185,11 @@ export async function githubSync(
 
 export async function githubPages(
   path: string,
-  key: "environments" | "variables",
+  key: "environments" | "variables" | "secrets",
   runner: Runner = run,
 ): Promise<Array<{ name: string; value?: string }>> {
   if (
-    !/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/environments(?:\/[A-Za-z0-9_-]+\/variables)?$/.test(
+    !/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/environments(?:\/[A-Za-z0-9_-]+\/(?:variables|secrets))?$/.test(
       path,
     )
   )
@@ -221,7 +221,13 @@ export async function githubPages(
       )
     )
       throw new Error("GitHub 列表响应格式异常。");
-    items.push(...batch);
+    items.push(
+      ...batch.map((item) =>
+        key === "variables"
+          ? { name: item.name, value: item.value }
+          : { name: item.name },
+      ),
+    );
     if (batch.length < 100) return items;
   }
   throw new Error("GitHub 列表超过分页限制，未写入任何配置。");

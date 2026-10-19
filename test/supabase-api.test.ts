@@ -195,7 +195,7 @@ test("status reloads an API key using an in-memory PAT and the bound user/ref wi
   );
   assert.ok(
     screens.some((screen) =>
-      screen.includes("SUPABASE_PUBLISHABLE_KEY: 已配置（隐藏）"),
+      screen.includes("SUPABASE_PUBLISHABLE_KEY: 本机已载入（值已隐藏）"),
     ),
   );
 });

@@ -46,6 +46,15 @@ type Runtime = {
   statuses: Record<string, LoginStatus>;
   officialCloudflareToken?: string;
   transientSupabaseToken?: string;
+  githubEnvironment?: Record<
+    string,
+    {
+      repository: string;
+      identity: string;
+      variables?: string[];
+      secrets?: string[];
+    }
+  >;
 };
 
 export type Choice = { name: string; value: string };
@@ -545,6 +554,7 @@ async function ensurePublishableKey(ctx: Context): Promise<void> {
 async function refreshLogin(ctx: Context, progress = false): Promise<void> {
   for (const provider of ["cloudflare", "supabase", "github"]) {
     if (progress) ctx.ui.log(`正在验证 ${provider} 登录…`);
+    if (provider === "github") delete runtime(ctx).githubEnvironment?.[ctx.env];
     try {
       if (provider === "cloudflare") {
         if (values(ctx)["@cloudflareSource"] === "wrangler")
@@ -604,10 +614,56 @@ async function refreshLogin(ctx: Context, progress = false): Promise<void> {
           });
       } else {
         const user = await githubIdentity(ctx);
+        const repo = values(ctx)["@repository"];
+        let incomplete = false;
+        if (repo && values(ctx)["@githubIdentity"]) {
+          if (progress)
+            ctx.ui.log(
+              `正在检查 GitHub ${repo} / ${ctx.env} 的 Variable / Secret 名称（不读取 Secret 值）…`,
+            );
+          const [variables, secrets] = await Promise.allSettled([
+            githubPages(
+              `repos/${repo}/environments/${ctx.env}/variables`,
+              "variables",
+              ctx.runner,
+            ),
+            githubPages(
+              `repos/${repo}/environments/${ctx.env}/secrets`,
+              "secrets",
+              ctx.runner,
+            ),
+          ]);
+          const after = await githubIdentity(ctx);
+          if (after.id !== user.id || values(ctx)["@repository"] !== repo)
+            throw new Error(
+              "GitHub 身份或仓库在读取期间变化，已丢弃云端状态。",
+            );
+          const snapshots = (runtime(ctx).githubEnvironment ??= {});
+          snapshots[ctx.env] = {
+            repository: repo,
+            identity: String(user.id),
+            variables:
+              variables.status === "fulfilled"
+                ? variables.value.map((entry) => entry.name)
+                : undefined,
+            secrets:
+              secrets.status === "fulfilled"
+                ? secrets.value.map((entry) => entry.name)
+                : undefined,
+          };
+          incomplete =
+            variables.status !== "fulfilled" || secrets.status !== "fulfilled";
+        }
         status(ctx, provider, {
           state: "已验证",
           source: "官方 gh",
           identity: user.login,
+          ...(incomplete
+            ? {
+                detail:
+                  "部分 Environment 元数据查询失败；对应云端配置状态未知，请检查网络与权限。",
+              }
+            : {}),
         });
       }
     } catch (error) {
@@ -644,11 +700,31 @@ function configLines(ctx: Context): string[] {
           activeCredential(ctx, "cloudflare") ??
           values(ctx)[field])
         : values(ctx)[field];
-    return `${target}: ${value ? (allFields(ctx.config)[field]!.secret ? "已配置（隐藏）" : display(value)) : "未配置"}`;
+    if (value)
+      return `${target}: ${allFields(ctx.config)[field]!.secret ? "本机已载入（值已隐藏）" : display(value)}`;
+    const cloud = runtime(ctx).githubEnvironment?.[ctx.env];
+    if (
+      cloud &&
+      cloud.repository === values(ctx)["@repository"] &&
+      cloud.identity === values(ctx)["@githubIdentity"]
+    ) {
+      if (cloud.secrets?.includes(target))
+        return `${target}: GitHub ${ctx.env}：已配置（Secret，值不可读取；本机未载入）`;
+      if (cloud.variables?.includes(target))
+        return `${target}: GitHub ${ctx.env}：已配置（Variable，本机未载入）`;
+      if (
+        cloud.variables &&
+        cloud.secrets &&
+        Object.hasOwn(ctx.config.variables, field)
+      )
+        return `${target}: 本机未载入；GitHub ${ctx.env}：未配置（仅检查 Environment 级）`;
+    }
+    return `${target}: 本机未载入（云端未检查或无法检查）`;
   });
 }
 async function showStatus(ctx: Context): Promise<void> {
   while (true) {
+    delete runtime(ctx).githubEnvironment?.[ctx.env];
     // Show local values before a CLI/network check can delay the result. Keep
     // the final snapshot inside the prompt so menu rendering cannot hide it.
     ctx.ui.log(`\n${ctx.config.project} / ${ctx.env} — 本机配置（隐藏凭据）`);
@@ -661,7 +737,7 @@ async function showStatus(ctx: Context): Promise<void> {
         "",
         ...configLines(ctx),
         "",
-        "未配置表示本机尚未读取，不代表线上未配置；GitHub Secrets 无法回读。",
+        "本机未载入不代表云端未配置；Secret 仅核对名称，值不可读取。隐藏不代表本机已加密保存。",
       ].join("\n"),
       [
         { name: "返回主菜单", value: "back" },

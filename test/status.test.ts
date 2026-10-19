@@ -92,10 +92,10 @@ test("imported GitHub variables stay on the status screen until returning, witho
     assert.ok(screens[0]!.includes(`${name}: ${value}`));
   assert.match(screens[0]!, /fulcord \/ staging/);
   assert.match(screens[0]!, /github: 已验证.*fixture-user/);
-  assert.match(screens[0]!, /CLOUDFLARE_API_TOKEN: 已配置（隐藏）/);
-  assert.match(screens[0]!, /SUPABASE_PUBLISHABLE_KEY: 已配置（隐藏）/);
-  assert.match(screens[0]!, /SUPABASE_URL: 未配置/);
-  assert.match(screens[0]!, /不代表线上未配置/);
+  assert.match(screens[0]!, /CLOUDFLARE_API_TOKEN: 本机已载入（值已隐藏）/);
+  assert.match(screens[0]!, /SUPABASE_PUBLISHABLE_KEY: 本机已载入（值已隐藏）/);
+  assert.match(screens[0]!, /SUPABASE_URL: 本机未载入/);
+  assert.match(screens[0]!, /不代表云端未配置/);
   assert.ok(![...logs, ...screens].join("\n").includes(token));
   assert.ok(![...logs, ...screens].join("\n").includes(key));
 });
@@ -131,7 +131,9 @@ test("status shows local fields before slow login verification and can refresh a
     runner: async (command, args) => {
       assert.equal(command, "gh");
       assert.ok(args.includes("user"));
-      assert.ok(logs.some((line) => line.includes("CF_ACCOUNT_ID: 未配置")));
+      assert.ok(
+        logs.some((line) => line.includes("CF_ACCOUNT_ID: 本机未载入")),
+      );
       assert.ok(logs.some((line) => line.includes("正在验证 github")));
       await new Promise<void>((resolve) => setImmediate(resolve));
       if (++checks === 1) throw new Error("fixture login unavailable");
@@ -212,7 +214,7 @@ test("reopened official Supabase binding reloads the publishable key for status 
       screens.some(
         (screen) =>
           screen.includes("supabase: 已验证") &&
-          screen.includes("SUPABASE_PUBLISHABLE_KEY: 已配置（隐藏）"),
+          screen.includes("SUPABASE_PUBLISHABLE_KEY: 本机已载入（值已隐藏）"),
       ),
     );
     assert.ok(!screens.join("\n").includes(key));

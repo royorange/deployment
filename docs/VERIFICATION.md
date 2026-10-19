@@ -3,8 +3,8 @@
 验证对象：`@royorange/project-setup` 0.3.0，独立维护于 `royorange/deployment`。
 
 - `corepack pnpm lint`、`typecheck`、`test:coverage`、`build`、`format:check`、`test:package` 均成功。
-- 113 项合成测试通过；导入的工具模块行覆盖率 95.52%，分支覆盖率 82.29%。CLI 入口由安装包烟测与实际 PTY 单独验证。
-- Node 24.16.0 和本机默认 Node 26.7.0 各执行一轮 113 项测试并通过。CI 配置覆盖 Linux/macOS × Node 22/24；远端结果以对应提交的 Actions 为准。
+- 118 项合成测试通过；导入的工具模块行覆盖率 95.61%，分支覆盖率 82.60%。CLI 入口由安装包烟测与实际 PTY 单独验证。
+- Node 24.16.0 和本机默认 Node 26.7.0 各执行一轮 118 项测试并通过。CI 配置覆盖 Linux/macOS × Node 22/24；远端结果以对应提交的 Actions 为准。
 - 在仓库外安装实际 tarball，验证编译后的 JS、帮助、内置模板、首次初始化、记录恢复，不依赖 Fulcord 源码。
 - 本机已安装到 `~/.local`；从用户目录执行 `project-setup` 能选择已有 Fulcord/zoncord，进入 API 默认连接，发出打开官方 Token 页请求后直接等待隐藏输入。测试未输入真实 PAT，没有创建或修改 Supabase 项目。
 - `project-setup --doctor` 明确区分 API 与可选 CLI，验证本机 gh、目标/启动目录内 Wrangler 的可执行性。Fulcord 的 `corepack pnpm infra:setup --help` 经薄入口成功透传。
@@ -14,3 +14,5 @@
 配套 Fulcord 验证：lint、typecheck、format、构建成功；92 项应用测试和 11 项部署/入口测试通过。迁出后只保留项目映射与独立命令入口。
 
 真实 scoped PAT 的账号权限、暂停项目恢复、托管网关和业务迁移仍需使用者明确提供授权后验证；合成测试和管理 API 可达不替代这些验收。
+
+迁出后与 Fulcord 最新 main 对齐，保留 #12 的本机/云端 Secret 名称状态修复及五项回归测试；不因为源码迁移而回退该行为。
