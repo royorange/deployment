@@ -9,10 +9,11 @@ export class SupabaseTokenCancelled extends Error {}
 export async function acquireSupabaseToken(
   ui: UI,
   runner: Runner,
+  storageMode: "vault" | "metadata" | "memory" = "memory",
 ): Promise<string> {
   ui.log(supabaseTokensUrl);
   ui.log(
-    "进入 Supabase Dashboard → 账号设置 → Access Tokens。创建限定组织/项目、有限有效期的 scoped PAT；不要选择全权限。PAT 不会导出到应用或 GitHub，默认仅本次内存；显式启用 --vault 才会加密保存。",
+    `进入 Supabase Dashboard → 账号设置 → Access Tokens。创建限定组织/项目、有限有效期的 scoped PAT；不要选择全权限。PAT 不会导出到应用或 GitHub；${storageMode === "vault" ? "连接验证成功后加密保存到本机保险库，下次解锁复用" : "本次凭据仅留内存，退出后不保存"}。`,
   );
   ui.log(
     "列表选择需要 Organizations (Read) 和 Projects (account-wide) (Read)；范围受限时可手输 Project Ref，读取项目需要 Project Settings (Read)。读取 Key 当前需要 API Keys (Read) + API Key Secrets (Read)。仅配置 Auth 时另需 Auth Config (Read/Read-write) + Project Settings (Read-write)。权限详情：https://supabase.com/docs/guides/platform/personal-access-tokens",

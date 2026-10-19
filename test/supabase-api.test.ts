@@ -96,6 +96,20 @@ const connect = (ctx: Context) =>
     .actions.find((action) => action.id === "project")!
     .execute(ctx);
 
+for (const mode of ["vault", "memory", "metadata"] as const)
+  test(`Supabase token instructions describe the active ${mode} storage mode`, async () => {
+    const { ctx, logs } = context(["new", "input", "org-fixture", ref]);
+    ctx.storageMode = mode;
+    await connect(ctx);
+    const instructions = logs.join("\n");
+    if (mode === "vault") {
+      assert.match(instructions, /加密保存到本机保险库，下次解锁复用/);
+      assert.doesNotMatch(instructions, /默认仅本次内存|显式启用 --vault/);
+    } else assert.match(instructions, /本次凭据仅留内存，退出后不保存/);
+    assert.ok(!instructions.includes(token));
+    assert.equal(ctx.data.credentials["supabase/personal"], token);
+  });
+
 test("API is the first Supabase source and token acquisition can open the official page then continue manually", async () => {
   const { ctx, logs, screens } = context([
     "new",

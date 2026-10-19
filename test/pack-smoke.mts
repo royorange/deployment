@@ -45,8 +45,15 @@ try {
   assert.match(help, /project-setup/);
   assert.match(help, /--memory/);
   assert.match(help, /--vault/);
-  assert.match(help, /无需新建保险库口令/);
+  assert.match(help, /默认加密保存各服务/);
+  assert.match(help, /--no-vault/);
   assert.match(help, /无需指定 --root/);
+  const { argumentsFor } = await import(
+    pathToFileURL(join(installed, "dist/arguments.js")).href
+  );
+  const { openStorage } = await import(
+    pathToFileURL(join(installed, "dist/storage.js")).href
+  );
   const { prepareProject } = await import(
     pathToFileURL(join(installed, "dist/startup.js")).href
   );
@@ -74,8 +81,38 @@ try {
   const restored = await prepareProject(options);
   assert.deepEqual(restored.config, first.config);
   assert.equal(answers.length, 0);
+  const passphrase = "synthetic package test passphrase";
+  const storageOptions = {
+    base: options.base,
+    root: projectRoot,
+    config: first.config,
+    mode: argumentsFor([]).mode,
+    ui: {
+      input: async (_message: string, inputOptions?: { secret?: boolean }) => {
+        assert.equal(inputOptions?.secret, true);
+        return passphrase;
+      },
+      confirm: async () => false,
+      log: () => {},
+    },
+  };
+  const storage = await openStorage(storageOptions);
+  storage.data.credentials["supabase/package"] = "synthetic-package-pat";
+  await storage.save();
+  storage.close();
+  const reopenedStorage = await openStorage(storageOptions);
+  assert.equal(
+    reopenedStorage.data.credentials["supabase/package"],
+    "synthetic-package-pat",
+  );
+  reopenedStorage.close();
+  assert.ok(
+    !(
+      await readFile(join(options.base, "project-setup/vault.json"), "utf8")
+    ).includes("synthetic-package-pat"),
+  );
   process.stdout.write(
-    "独立安装包验证通过：仓库外安装、编译 JS 入口、帮助、内置 zoncord 模板及无参数恢复。\n",
+    "独立安装包验证通过：仓库外安装、编译 JS 入口、帮助、内置 zoncord 模板、无参数恢复与默认加密凭据重开。\n",
   );
 } finally {
   await rm(temp, { recursive: true, force: true });

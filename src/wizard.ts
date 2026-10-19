@@ -330,7 +330,7 @@ async function credential(
   }
   const acquiredSupabaseToken =
     provider === "supabase" && selected === "new"
-      ? await acquireSupabaseToken(ctx.ui, ctx.runner)
+      ? await acquireSupabaseToken(ctx.ui, ctx.runner, ctx.storageMode)
       : undefined;
   let alias = selected;
   if (selected === "new" || selected === "environment") {
@@ -1657,7 +1657,9 @@ export async function wizard(ctx: Context): Promise<void> {
       ctx.ui.log(
         ctx.storageMode === "memory"
           ? "内存模式：本次配置未保存到本机状态文件。"
-          : "本机项目配置与绑定已保存。",
+          : ctx.storageMode === "vault"
+            ? "凭据已加密保存；本机项目配置与绑定已保存。"
+            : "公开配置与绑定已保存；本次凭据退出后不保留。",
       );
     } catch (error) {
       if (error instanceof Error && error.name === "ExitPromptError")
@@ -1679,7 +1681,9 @@ export async function wizard(ctx: Context): Promise<void> {
           ...resultLines
             .slice(-8)
             .map((line) => safeMessage(new Error(line), ctx)),
-          "公开配置与绑定可保存到本机；Token/Key 默认仅留本次内存。",
+          ctx.storageMode === "vault"
+            ? "统一加密保险库已启用；各服务 Token/Key 隐藏保存，下次解锁复用。"
+            : "当前未启用保险库；本次 Token/Key 退出后不保留。",
         ].join("\n"),
         [
           { name: "返回主菜单", value: "back" },
