@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "project": "zoncord",
+  "repository": "royorange/zoncord",
+  "environments": ["staging", "production"],
+  "variables": {
+    "cloudflareAccountId": "CF_ACCOUNT_ID",
+    "cloudflareToken": "CLOUDFLARE_API_TOKEN",
+    "pagesProject": "CF_PAGES_PROJECT",
+    "workerName": "CF_WORKER_NAME",
+    "appOrigin": "APP_ORIGIN",
+    "privateOrigin": "ORIGIN_BASE_URL",
+    "supabaseUrl": "SUPABASE_URL",
+    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY"
+  },
+  "extraFields": {
+    "deploymentEnvironment": {
+      "label": "部署环境（staging 或 production）",
+      "kind": "text",
+      "secret": false
+    },
+    "privateOrigin": {
+      "label": "AWS 私有业务入口 HTTPS Origin",
+      "kind": "origin",
+      "secret": false
+    },
+    "imageRepository": {
+      "label": "容器镜像仓库（按 zoncord deploy profile 要求）",
+      "kind": "text",
+      "secret": false
+    },
+    "cloudflaredImage": {
+      "label": "cloudflare/cloudflared@sha256:<digest>",
+      "kind": "text",
+      "secret": false
+    }
+  },
+  "defaults": {
+    "staging": {
+      "deploymentEnvironment": "staging",
+      "pagesProject": "zoncord-web",
+      "workerName": "zoncord-edge-staging"
+    },
+    "production": { "deploymentEnvironment": "production" }
+  },
+  "jsonExport": {
+    "environment": "deploymentEnvironment",
+    "publicOrigin": "appOrigin",
+    "privateOrigin": "privateOrigin",
+    "cloudflareAccountId": "cloudflareAccountId",
+    "pagesProject": "pagesProject",
+    "workerName": "workerName",
+    "imageRepository": "imageRepository",
+    "cloudflaredImage": "cloudflaredImage"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "name": "@royorange/project-setup",
+  "version": "0.3.0",
+  "description": "Interactive, portable Cloudflare, Supabase and GitHub project setup",
+  "type": "module",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.34.7",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/royorange/deployment.git"
+  },
+  "homepage": "https://github.com/royorange/deployment#readme",
+  "bugs": {
+    "url": "https://github.com/royorange/deployment/issues"
+  },
+  "bin": {
+    "project-setup": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --experimental-strip-types scripts/test.mts",
+    "test:coverage": "node --experimental-strip-types scripts/test.mts --coverage",
+    "lint": "eslint src test scripts --max-warnings 0",
+    "format": "prettier --write src test scripts docs examples README.md AGENTS.md package.json pnpm-workspace.yaml eslint.config.mjs .github",
+    "format:check": "prettier --check src test scripts docs examples README.md AGENTS.md package.json pnpm-workspace.yaml eslint.config.mjs .github",
+    "start": "node dist/cli.js",
+    "dev": "pnpm build && node dist/cli.js",
+    "pack:local": "pnpm pack --pack-destination .artifacts",
+    "test:package": "pnpm pack:local && node --experimental-strip-types test/pack-smoke.mts",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "8.7.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.5",
+    "eslint": "10.13.0",
+    "prettier": "3.8.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.2"
+  }
+}

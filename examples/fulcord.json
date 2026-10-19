@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "project": "fulcord",
+  "repository": "royorange/fulcord",
+  "environments": ["staging", "production"],
+  "githubSecrets": ["supabaseUrl"],
+  "variables": {
+    "cloudflareAccountId": "CF_ACCOUNT_ID",
+    "cloudflareToken": "CLOUDFLARE_API_TOKEN",
+    "pagesProject": "CF_PAGES_PROJECT",
+    "workerName": "CF_WORKER_NAME",
+    "siteOrigin": "FULCORD_SITE_ORIGIN",
+    "appOrigin": "FULCORD_APP_ORIGIN",
+    "supabaseUrl": "SUPABASE_URL",
+    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY"
+  },
+  "defaults": {
+    "staging": {
+      "pagesProject": "fulcord-web",
+      "workerName": "fulcord-app-staging",
+      "siteOrigin": "https://staging.fulcord-web.pages.dev"
+    }
+  },
+  "envExports": [
+    {
+      "label": "Fulcord 应用配置（部署环境；不用于 localhost）",
+      "path": "apps/web/.env.local",
+      "fields": ["supabaseUrl", "supabasePublishableKey", "appOrigin"]
+    },
+    {
+      "label": "Cloudflare 部署公开配置（可传 --env-file）",
+      "path": "deploy/.env.{environment}",
+      "fields": [
+        "cloudflareAccountId",
+        "pagesProject",
+        "workerName",
+        "siteOrigin",
+        "appOrigin"
+      ]
+    }
+  ]
+}
