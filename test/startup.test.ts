@@ -388,3 +388,112 @@ test("unsafe permissions on saved records are rejected and cancellation leaves n
     }
   });
 });
+
+test("new AWS template asks auth and configures no credentials or predicted endpoints", async () => {
+  await fixture(async (home, root, base) => {
+    const { config: generated } = await prepareProject({
+      cwd: root,
+      home,
+      base,
+      ui: ui(
+        ["current", "aws-tunnel", "supabase"],
+        ["new-service", "example/new-service"],
+      ),
+    });
+    assert.equal(generated.project, "new-service");
+    assert.equal(generated.repository, "example/new-service");
+    assert.equal(generated.deploymentTopology, "aws-tunnel");
+    assert.equal(generated.migrationStrategy, "supabase-cli");
+    assert.equal(generated.setup?.auth, "supabase");
+    assert.equal(generated.variables.workerName, undefined);
+    assert.equal(generated.variables.cloudflareTunnelToken, "CF_TUNNEL_TOKEN");
+    assert.equal(generated.defaults?.staging?.deploymentTarget, "staging");
+    assert.ok(!JSON.stringify(generated.defaults).includes("https://"));
+    assert.ok(!generated.defaults?.staging?.cloudflareAccountId);
+    const restored = await prepareProject({
+      cwd: root,
+      home,
+      base,
+      ui: ui(["current"]),
+    });
+    assert.deepEqual(restored.config, generated);
+  });
+});
+
+test("separate components template keeps frontend, admin and API settings independent", async () => {
+  await fixture(async (home, root, base) => {
+    const { config: generated } = await prepareProject({
+      cwd: root,
+      home,
+      base,
+      ui: ui(
+        ["current", "separate-components", "firebase"],
+        ["multi-service", ""],
+      ),
+    });
+    assert.equal(generated.repository, undefined);
+    assert.equal(generated.deploymentTopology, undefined);
+    assert.equal(generated.migrationStrategy, "project-managed");
+    assert.equal(generated.setup?.auth, "firebase");
+    const components = generated.setup?.components;
+    assert.equal(components?.length, 3);
+    assert.deepEqual(
+      components?.map((item) => item.id),
+      ["web", "admin", "api"],
+    );
+    assert.equal(components?.[0]?.originField, "appOrigin");
+    assert.equal(components?.[1]?.originField, "adminOrigin");
+    assert.equal(components?.[0]?.projectField, "pagesProject");
+    assert.equal(components?.[1]?.projectField, "adminPagesProject");
+    assert.equal(components?.[0]?.branchField, "frontendBranch");
+    assert.equal(components?.[1]?.branchField, "adminBranch");
+    assert.equal(components?.[2]?.hosting, "external");
+    assert.ok(components?.[2]?.instructions?.includes("项目已有"));
+    assert.equal(generated.variables.cloudflareTunnelToken, undefined);
+    assert.ok(!/https:\/\/[^" ]+\.pages\.dev/.test(JSON.stringify(generated)));
+    assert.ok(!generated.defaults?.staging?.frontendBranch);
+    assert.ok(
+      generated.setup?.requirements?.some(
+        (item) => item.id === "database-role",
+      ),
+    );
+    assert.ok(
+      !generated.setup?.requirements?.some((item) =>
+        ["payments", "ai", "push"].includes(item.id),
+      ),
+    );
+  });
+});
+
+test("new templates permit explicit external or no authentication and reject unknown auth", async () => {
+  await fixture(async (home, root, base) => {
+    for (const auth of ["external", "none"]) {
+      const result = await prepareProject({
+        cwd: root,
+        home,
+        base,
+        memory: true,
+        ui: ui(["current", "separate-components", auth], ["new-service", ""]),
+      });
+      assert.equal(result.config.setup?.auth, auth);
+    }
+    await assert.rejects(
+      prepareProject({
+        cwd: root,
+        home,
+        base,
+        memory: true,
+        ui: {
+          ...ui(["current", "aws-tunnel"], ["new-service", ""]),
+          select: async (message, choices) => {
+            if (message.includes("认证")) return "invalid-auth";
+            return message.includes("配置来源")
+              ? "aws-tunnel"
+              : choices[0]!.value;
+          },
+        },
+      }),
+      /认证/,
+    );
+  });
+});

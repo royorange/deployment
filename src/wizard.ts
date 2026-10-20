@@ -1,5 +1,6 @@
 import {
   allFields,
+  name as resourceName,
   exportEntries,
   projectKey,
   repository,
@@ -26,6 +27,8 @@ import {
   tokenIdentity,
 } from "./supabase-token.ts";
 import { migrationSession } from "./migrations.ts";
+import type { PagesEvidence } from "./setup-evidence.ts";
+import { inspectPagesDeployment } from "./pages-status.ts";
 import { CloudflareTunnels } from "./tunnels.ts";
 import {
   configureTunnel,
@@ -54,6 +57,7 @@ type Runtime = {
   statuses: Record<string, LoginStatus>;
   officialCloudflareToken?: string;
   transientSupabaseToken?: string;
+  pagesEvidence?: Record<string, PagesEvidence[]>;
   githubEnvironment?: Record<
     string,
     {
@@ -630,8 +634,16 @@ async function refreshLogin(ctx: Context, progress = false): Promise<void> {
           activeCredential(ctx, "cloudflare")
         ) {
           const client = await cloudflareClient(ctx);
+          if (!values(ctx).pagesProject) {
+            status(ctx, provider, {
+              state: "未验证",
+              source: "手动/保险库 Token 已载入",
+              detail:
+                "尚未核验目标资源权限；可在所需 Pages 或 Tunnel 操作中验证，不要求创建 Pages。",
+            });
+            continue;
+          }
           if (
-            !values(ctx).pagesProject ||
             !(await client.pagesProject(
               values(ctx).cloudflareAccountId!,
               values(ctx).pagesProject!,
@@ -806,7 +818,7 @@ async function showStatus(ctx: Context): Promise<void> {
         "本机未载入不代表云端未配置；Secret 仅核对名称，值不可读取。隐藏不代表本机已加密保存。",
       ].join("\n"),
       [
-        { name: "返回主菜单", value: "back" },
+        { name: "返回上一级", value: "back" },
         { name: "刷新登录验证", value: "refresh" },
       ],
     );
@@ -893,6 +905,14 @@ async function cloudflareAccount(ctx: Context): Promise<void> {
       "cloudflareTunnelId",
       "cloudflareTunnelToken",
       "@cloudflareTunnelManagement",
+      ...(ctx.config.setup?.components ?? [])
+        .filter((component) => ["pages", "worker"].includes(component.hosting))
+        .flatMap((component) => [
+          component.projectField,
+          component.originField,
+          component.branchField,
+        ])
+        .filter((field): field is string => field !== undefined),
     ])
       delete values(ctx)[key];
   }
@@ -908,14 +928,56 @@ async function cloudflareAccount(ctx: Context): Promise<void> {
   });
 }
 async function pages(ctx: Context): Promise<void> {
-  const client = await cloudflareClient(ctx);
   const account = values(ctx).cloudflareAccountId;
   if (!account) throw new Error("请先选择 Cloudflare 账号。");
+  const components =
+    ctx.config.setup?.components?.filter(
+      (item) =>
+        item.hosting === "pages" && item.projectField && item.originField,
+    ) ?? [];
+  const selected = components.length
+    ? await ctx.ui.select("选择要配置的 Pages 组件", [
+        ...components.map((item) => ({
+          name: item.title,
+          value: `component:${item.id}`,
+        })),
+        { name: "返回", value: "back" },
+      ])
+    : undefined;
+  if (selected === "back") return;
+  const component = components.find(
+    (item) => `component:${item.id}` === selected,
+  );
+  const projectField = component?.projectField ?? "pagesProject";
+  const originField = component?.originField ?? "siteOrigin";
+  const previousEvidence = runtime(ctx).pagesEvidence?.[ctx.env];
+  if (previousEvidence) {
+    const remaining = previousEvidence.filter(
+      (item) => item.projectField !== projectField,
+    );
+    if (remaining.length) runtime(ctx).pagesEvidence![ctx.env] = remaining;
+    else delete runtime(ctx).pagesEvidence![ctx.env];
+  }
+  const client = await cloudflareClient(ctx);
   const name = await inputField(
     ctx,
-    "pagesProject",
-    values(ctx).pagesProject ?? `${ctx.config.project}-web`,
+    projectField,
+    values(ctx)[projectField] ??
+      `${ctx.config.project.slice(0, 62 - (component?.id ?? "web").length)}-${component?.id ?? "web"}`,
   );
+  if (!resourceName(name))
+    throw new Error("Pages 项目名称必须为 2–63 位小写字母、数字和连字符。");
+  const shared = components.find(
+    (item) =>
+      item.id !== component?.id && values(ctx)[item.projectField!] === name,
+  );
+  if (
+    shared &&
+    !(await ctx.ui.confirm(
+      `此 Pages 项目已绑定${shared.title}，不同组件发布可能相互覆盖。仍要复用 ${name}？`,
+    ))
+  )
+    return;
   let project = await client.pagesProject(account, name);
   if (!project) {
     if (
@@ -926,26 +988,58 @@ async function pages(ctx: Context): Promise<void> {
       return;
     project = await client.createPages(account, name);
   }
-  if (project.name !== name || project.production_branch !== "main")
-    throw new Error(
-      "现有 Pages 名称或 production branch 与预期不符；请在控制台检查，工具未修改现有项目。",
-    );
+  if (project.name !== name)
+    throw new Error("返回的 Pages 项目与目标名称不同，未保存绑定。");
   if (project.source)
-    throw new Error(
-      "现有项目绑定了 Git 构建源。请保留现有部署方式，或选择独立 Direct Upload 项目；工具不会转换项目。",
-    );
-  const prefix =
-    ctx.env === "production"
-      ? ""
-      : `${ctx.env.toLowerCase().replace(/_/g, "-")}.`;
-  values(ctx).pagesProject = name;
-  values(ctx).siteOrigin = validateField(
-    ctx.config,
-    "siteOrigin",
-    `https://${prefix}${name}.pages.dev`,
-  );
+    ctx.ui.log("现有项目使用 Git 构建；保留该构建方式，仅检查部署记录。");
+  const branch = (
+    await ctx.ui.input("待核验的真实部署分支（请对照项目部署脚本或控制台）", {
+      value:
+        component?.branchField && values(ctx)[component.branchField]
+          ? values(ctx)[component.branchField]
+          : ctx.env === "production"
+            ? project.production_branch
+            : ctx.env,
+    })
+  ).trim();
+  if (!branch || branch.length > 255 || /[\x00-\x1f\x7f]/.test(branch))
+    throw new Error("请输入有效的 Pages 部署分支。");
+  const evidence = await inspectPagesDeployment(client, account, name, {
+    branch,
+    environment:
+      branch === project.production_branch ? "production" : "preview",
+  });
+  values(ctx)[projectField] = name;
+  if (component?.branchField) values(ctx)[component.branchField] = branch;
+  const snapshots = (runtime(ctx).pagesEvidence ??= {});
+  snapshots[ctx.env] = [
+    ...(snapshots[ctx.env] ?? []).filter(
+      (item) => item.projectField !== projectField,
+    ),
+    {
+      account,
+      project: name,
+      projectField,
+      branch,
+      status: evidence.status,
+      message: evidence.message,
+      checkedAt: new Date().toISOString(),
+    },
+  ];
+  ctx.ui.log(`Pages / ${name} / ${branch}：${evidence.message}`);
+  if (evidence.status === "deployed" && evidence.deployment) {
+    const url = evidence.deployment.url;
+    ctx.ui.log(`API 确认的部署 URL：${url}`);
+    if (
+      values(ctx)[originField] !== url &&
+      (await ctx.ui.confirm(
+        `将真实部署 URL ${url} 保存为${allFields(ctx.config)[originField]!.label}？已有自定义域名默认保留；请另行核验 DNS、Access 和应用访问。`,
+      ))
+    )
+      values(ctx)[originField] = validateField(ctx.config, originField, url);
+  }
   ctx.ui.log(
-    `Pages 已就绪，预计部署地址：${values(ctx).siteOrigin}。首次部署前该地址可能尚不可访问；创建项目不会上传占位站点。`,
+    "资源存在、API 发布状态与实际访问是不同证据；认证、Access 和业务功能仍需独立验证。未生成预测地址，也未自动覆盖应用入口。",
   );
 }
 async function worker(ctx: Context): Promise<void> {
@@ -1812,4 +1906,12 @@ export async function wizard(ctx: Context): Promise<void> {
   }
 }
 
+// Shared operations keep the guided entrypoint on the same preview, credential
+// and confirmation paths as the provider integration harness.
+export const operations = {
+  import: importConfig,
+  export: exportConfig,
+  edit,
+  status: showStatus,
+};
 export const defaultRunner = run;
