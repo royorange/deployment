@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "project": "shimau-example",
+  "migrationStrategy": "project-managed",
+  "environments": ["staging", "production"],
+  "variables": {
+    "cloudflareAccountId": "CF_ACCOUNT_ID",
+    "cloudflareToken": "CLOUDFLARE_API_TOKEN",
+    "pagesProject": "CF_PAGES_PROJECT",
+    "appOrigin": "APP_ORIGIN",
+    "frontendBranch": "FRONTEND_DEPLOY_BRANCH",
+    "adminPagesProject": "CF_ADMIN_PAGES_PROJECT",
+    "adminOrigin": "ADMIN_ORIGIN",
+    "adminBranch": "ADMIN_DEPLOY_BRANCH",
+    "apiOrigin": "API_ORIGIN",
+    "supabaseProjectRef": "SUPABASE_PROJECT_REF",
+    "supabaseUrl": "SUPABASE_URL",
+    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY"
+  },
+  "extraFields": {
+    "frontendBranch": {
+      "label": "前台实际部署分支",
+      "kind": "text",
+      "secret": false
+    },
+    "adminPagesProject": {
+      "label": "后台 Pages 项目",
+      "kind": "text",
+      "secret": false
+    },
+    "adminOrigin": {
+      "label": "后台 HTTPS Origin",
+      "kind": "origin",
+      "secret": false
+    },
+    "adminBranch": {
+      "label": "后台实际部署分支",
+      "kind": "text",
+      "secret": false
+    },
+    "apiOrigin": {
+      "label": "API HTTPS Origin",
+      "kind": "origin",
+      "secret": false
+    }
+  },
+  "setup": {
+    "auth": "firebase",
+    "components": [
+      {
+        "id": "web",
+        "title": "用户前台",
+        "kind": "web",
+        "hosting": "pages",
+        "originField": "appOrigin",
+        "projectField": "pagesProject",
+        "branchField": "frontendBranch",
+        "instructions": "配置当前环境的真实 Pages 项目、部署分支和应用入口；发布后读取实际部署 URL，验证 API 地址与登录流程。"
+      },
+      {
+        "id": "admin",
+        "title": "管理后台",
+        "kind": "admin",
+        "hosting": "pages",
+        "originField": "adminOrigin",
+        "projectField": "adminPagesProject",
+        "branchField": "adminBranch",
+        "instructions": "使用独立 Pages 项目和入口，核对 Access 允许人员、登录会话、默认 pages.dev 地址及预览地址是否可绕过访问限制。"
+      },
+      {
+        "id": "api",
+        "title": "业务 API",
+        "kind": "api",
+        "hosting": "external",
+        "originField": "apiOrigin",
+        "instructions": "沿用项目已有后端构建、数据库迁移、容器部署和回滚流程；若采用 AWS，核对 CPU 架构、固定镜像、loopback 绑定和 Tunnel 路由。此组件不使用整站 Tunnel 部署向导。"
+      }
+    ],
+    "requirements": [
+      {
+        "id": "database-role",
+        "title": "数据库执行器与迁移账本",
+        "purpose": "建立业务数据库并使用受限运行时权限。",
+        "instructions": "核对项目自管迁移账本，按项目已有流程初始化业务表、策略、受限登录和连接串；密码由安全输入或保险库管理，不能将官方 CLI 账本与项目账本混用。"
+      },
+      {
+        "id": "storage",
+        "title": "Storage 业务验证",
+        "purpose": "验证 API 实际可读写所需桶。",
+        "instructions": "先确认桶名、访问策略与服务端凭据，再用独立测试对象显式进行上传、读取、删除；进程启动或健康接口成功不能代替此测试。"
+      },
+      {
+        "id": "api-config",
+        "title": "API 运行时配置",
+        "purpose": "让前后台安全访问当前环境 API。",
+        "instructions": "核对前台和后台 CORS Origin、认证项目、服务端凭据实际挂载、JWT 与配置加密密钥、独立环境变量和访问控制。重新配置时保留已有密钥，不自动重新生成。"
+      },
+      {
+        "id": "operations",
+        "title": "发布、后台任务与恢复",
+        "purpose": "为持续运营准备可追溯发布和恢复流程。",
+        "instructions": "按项目声明验证后台任务、日志轮转、依赖健康、告警接收、备份恢复与版本回滚；发布顺序和构建脚本沿用项目文档。支付、AI、推送仅在项目实际启用后补充专门检查。"
+      }
+    ]
+  },
+  "envExports": [
+    {
+      "label": "当前环境公开入口与 Pages 资源",
+      "path": ".project-setup/{environment}/public.env",
+      "fields": [
+        "cloudflareAccountId",
+        "pagesProject",
+        "appOrigin",
+        "frontendBranch",
+        "adminPagesProject",
+        "adminOrigin",
+        "adminBranch",
+        "apiOrigin"
+      ]
+    }
+  ]
+}

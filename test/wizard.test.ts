@@ -163,7 +163,15 @@ test("complete wizard configures two providers, reuses Pages, exports correct CI
         "back",
         "exit",
       ],
-      [undefined, undefined, undefined, undefined, undefined],
+      [
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ],
       logs,
     ),
     runner: async (_command, args, options) => {
@@ -185,6 +193,8 @@ test("complete wizard configures two providers, reuses Pages, exports correct CI
           success: true,
           result: [{ id: account, name: "Personal" }],
         });
+      if (path.endsWith("/deployments"))
+        return Response.json({ success: true, result: [] });
       if (path.includes("/pages/projects"))
         return pagesExists
           ? Response.json({

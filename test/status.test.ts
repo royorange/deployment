@@ -223,3 +223,42 @@ test("reopened official Supabase binding reloads the publishable key for status 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("a Tunnel-only Cloudflare credential is unverified rather than invalidated for having no Pages project", async () => {
+  const { operations } = await import("../src/wizard.ts");
+  const screens: string[] = [];
+  const ctx: Context = {
+    root: "/fixture",
+    config,
+    env: "staging",
+    data: {
+      credentials: { "cloudflare/tunnel": "fixture-token" },
+      profiles: {
+        [projectKey("fulcord", "staging")]: {
+          "@cloudflare": "cloudflare/tunnel",
+          cloudflareAccountId: "a".repeat(32),
+        },
+      },
+    },
+    save: async () => {},
+    runner: async () => {
+      throw new Error("not connected");
+    },
+    ui: {
+      select: async (message) => {
+        screens.push(message);
+        return "back";
+      },
+      input: async () => "",
+      check: async () => [],
+      confirm: async () => false,
+      log: () => {},
+    },
+    fetcher: async () => {
+      throw new Error("must not assume Pages access");
+    },
+  };
+  await operations.status(ctx);
+  assert.match(screens[0]!, /cloudflare: 未验证/);
+  assert.ok(!screens[0]!.includes("请先连接账号并选择 Pages"));
+});

@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.4.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.5.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -27,7 +27,7 @@ project-setup --doctor
 
 ## 选择项目与初始化
 
-启动首屏可选当前项目、已记录项目或输入其他目录。首次没有映射时，可用内置 zoncord 模板、通用映射或导入已有 JSON。Fulcord 团队映射示例位于 `examples/fulcord.json`，zoncord 位于 `examples/zoncord.json`。
+启动首屏可选当前项目、已记录项目或输入其他目录。首次没有映射时，可选择 AWS 整站、独立前后台/API、zoncord 模板、通用映射或导入已有 JSON。Fulcord 团队映射示例位于 `examples/fulcord.json`，zoncord 位于 `examples/zoncord.json`。
 
 用户映射保存到 `~/.config/project-setup/projects/<路径标签>-<16位哈希>/project.json`，设置 `XDG_CONFIG_HOME` 时使用对应目录。路径标签把分隔符换成横杠，哈希避免名称碰撞，项目根先解析成真实路径。映射导入为快照，原文件移动不影响后续启动。
 
@@ -40,6 +40,22 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 ```
 
 显式 `--config`、`--root` 会跳过项目选择；单用 `--config` 以启动目录为项目根与相对配置基准，同时指定 `--root` 时以该项目目录为准。已有映射不覆盖。方向键选择、空格勾选、回车确认、Ctrl+C 取消当前向导。结果页停留到你明确返回；已完成的外部写入不会因退出回滚。
+
+## 简单菜单与项目向导（0.5.0）
+
+外层固定六个入口：引导配置、账号与服务、查看状态、导入与导出、项目/环境/高级设置、保存并退出。服务操作完成后停留在当前流程；返回上一级不会退出。项目在启动时选择，切换项目可保存退出后重开，无需输入长路径。
+
+建议首次选择“引导配置”，以后用“查看状态 / 补齐缺项”。每项说明用途、当前状态、配置位置和验证方法，可以直接进入对应操作。向导根据当前项目和环境重新计算，不保存虚假的“已完成”游标；取消、失败或手动跳过不会标记成功。状态页默认只读本地配置，联网检查需明确选择；本地配置不等于账号已验证、资源已部署或业务可运行。
+
+项目映射可选 `setup` 声明：
+
+- `auth`：`supabase`、`firebase`、`external` 或 `none`。Firebase 项目不会被引导去修改 Supabase Auth。
+- `components`：分别声明前台、后台、API 和任务服务，关联公开的 Origin、托管项目、分支字段；同一字段通过环境默认值或当前环境配置隔离。后台须单独验证鉴权与默认托管地址绕过风险。
+- `requirements`：声明项目需要的 Storage、受限数据库角色、任务、可选支付/AI/推送、日志、备份恢复等配置和检查说明。只有项目声明的可选能力才展开；没有自动验证器的项目明确显示人工验证，不支持任意命令钩子。
+
+使用内置 AWS 整站 Tunnel 或独立前台/后台/API 模板可快速初始化；AWS 自动路由模板约定容器服务为 `app:3000`，其他服务名或端口应沿用项目流程。`examples/shimau.json` 提供按 shimau 拓扑整理的无凭据示例。模板是配置起点，实际镜像构建、迁移、发布、回滚和业务检查仍由项目已有流程负责。
+
+Pages 操作支持分别选择前台/后台组件，明确输入真实分支，只读读取部署列表。空项目、所选分支无记录、构建中、失败、已发布和查询未知分别报告；只展示 API 返回并校验过的实际部署 URL。保存为入口需要确认，不自动覆盖自定义域名，不拼接 `staging.<项目>.pages.dev`。状态页保留本次会话的组件检查时间与 API 发布记录；换绑定后失效，重新查询失败不沿用旧成功。API 报告发布成功仍需单独验证域名、Access 和业务功能。
 
 ## Supabase：默认 API 连接
 
@@ -95,7 +111,7 @@ Tunnel Token 可单独导出为项目内、Git 已忽略的原始私密文件，
 
 项目映射与工具版本应一同更新；旧工具遇到新字段会停止，需要更新已安装的 `project-setup`，不会忽略未知字段继续运行。macOS/Windows 上的 SSH 检查不证明目标平台 Docker 镜像架构兼容，发布前仍须核对主机架构。
 
-目前仍待通用化的能力：真实 Pages deployment/分支状态读取、分层的就绪引导、原生隔离 `--env-file`、按环境精确 Auth callbacks、项目声明的迁移策略与 bootstrap、自动脱敏审计。现有 Auth 网关检查不验证 executor 或业务数据库；官方 CLI 迁移入口不能用于另有迁移账本的项目。Zoncord 的 `public.schema_migrations` bundle 与 Supabase 官方 CLI 历史不可混用。
+目前仍待通用化的能力：原生隔离 `--env-file`、按环境精确 Auth callbacks、远端迁移账本探测与项目 bootstrap、自动脱敏审计、Worker/Access/私有 API 全链路检查。现有 Auth 网关检查不验证 executor 或业务数据库；官方 CLI 迁移入口不能用于另有迁移账本的项目。Zoncord 的 `public.schema_migrations` bundle 与 Supabase 官方 CLI 历史不可混用。
 
 ## 本地状态与安全边界
 
