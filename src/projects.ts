@@ -31,6 +31,12 @@ function mapping(input: unknown): Config {
     project: config.project,
     environments: config.environments,
     variables: config.variables,
+    ...(config.migrationStrategy !== undefined
+      ? { migrationStrategy: config.migrationStrategy }
+      : {}),
+    ...(config.deploymentTopology !== undefined
+      ? { deploymentTopology: config.deploymentTopology }
+      : {}),
     ...(config.repository !== undefined
       ? { repository: config.repository }
       : {}),

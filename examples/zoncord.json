@@ -2,6 +2,8 @@
   "version": 1,
   "project": "zoncord",
   "repository": "royorange/zoncord",
+  "deploymentTopology": "worker-private-origin",
+  "migrationStrategy": "project-managed",
   "environments": ["staging", "production"],
   "variables": {
     "cloudflareAccountId": "CF_ACCOUNT_ID",

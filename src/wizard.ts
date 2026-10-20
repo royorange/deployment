@@ -26,6 +26,14 @@ import {
   tokenIdentity,
 } from "./supabase-token.ts";
 import { migrationSession } from "./migrations.ts";
+import { CloudflareTunnels } from "./tunnels.ts";
+import {
+  configureTunnel,
+  configureDeployment,
+  showDeploymentPlan,
+  checkDeploymentHost,
+  exportTunnelToken,
+} from "./deployment-wizard.ts";
 import type { Values, VaultData } from "./vault.ts";
 import {
   CliSupabase,
@@ -170,7 +178,11 @@ async function inputField(
 async function credential(
   ctx: Context,
   provider: "cloudflare" | "supabase",
-  options: { official?: boolean; defaultAlias?: string } = {},
+  options: {
+    official?: boolean;
+    defaultAlias?: string;
+    purpose?: "tunnel";
+  } = {},
 ): Promise<string> {
   const envName =
     provider === "cloudflare"
@@ -350,6 +362,7 @@ async function credential(
           [
             profile["@cloudflare"],
             profile["@cloudflareDeploy"],
+            profile["@cloudflareTunnelManagement"],
             profile["@supabase"],
           ].includes(alias),
         )
@@ -368,7 +381,9 @@ async function credential(
       if (provider === "supabase") token = acquiredSupabaseToken;
       else {
         ctx.ui.log(
-          "API Token：指定账号的 Cloudflare Pages Edit + Workers Scripts Edit；自动列出账号另需 Account Settings Read，也可手填 Account ID。",
+          options.purpose === "tunnel"
+            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。"
+            : "API Token：指定账号的 Cloudflare Pages Edit + Workers Scripts Edit；自动列出账号另需 Account Settings Read，也可手填 Account ID。",
         );
         await browser(ctx, "https://dash.cloudflare.com/profile/api-tokens");
         token = await ctx.ui.input(`${envName}（隐藏输入）`, { secret: true });
@@ -402,7 +417,7 @@ function activeCredential(
     (provider === "cloudflare" ? values(ctx).cloudflareToken : undefined)
   );
 }
-async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
+async function cloudflareToken(ctx: Context): Promise<string> {
   if (values(ctx)["@cloudflareSource"] === "wrangler") {
     const session = await wranglerSession(
       ctx.root,
@@ -417,14 +432,65 @@ async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
       source: `官方 Wrangler / ${values(ctx)["@cloudflareProfile"]}`,
       identity: session.identity || "Account ID 已验证",
     });
-    return new Cloudflare(session.token, ctx.fetcher);
+    return session.token;
   }
   const token = activeCredential(ctx, "cloudflare");
   if (!token)
     throw new Error(
       "请先连接 Cloudflare 账号，选择官方 profile 或载入 Token；不会自动改变现有账号绑定。",
     );
-  return new Cloudflare(token, ctx.fetcher);
+  return token;
+}
+async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
+  return new Cloudflare(await cloudflareToken(ctx), ctx.fetcher);
+}
+async function tunnelClient(ctx: Context): Promise<CloudflareTunnels> {
+  const alias = values(ctx)["@cloudflareTunnelManagement"];
+  if (alias) {
+    const token = ctx.data.credentials[alias];
+    if (!token)
+      throw new Error(
+        "请解锁保险库或重新配置 Tunnel 管理 Token；不会改用其他凭据。",
+      );
+    return new CloudflareTunnels(token, ctx.fetcher);
+  }
+  ctx.ui.log(
+    "将使用现有 Cloudflare 登录。若 DNS 返回 403，请配置专用 Tunnel 管理 API Token（Tunnel Edit、Zone Read、DNS Edit）。",
+  );
+  return new CloudflareTunnels(await cloudflareToken(ctx), ctx.fetcher);
+}
+async function tunnelManagementCredential(ctx: Context): Promise<void> {
+  const before = { ...values(ctx) };
+  const statuses = structuredClone(runtime(ctx).statuses);
+  if (!before.cloudflareAccountId)
+    throw new Error("请先绑定 Cloudflare Account ID。");
+  const token = await credential(ctx, "cloudflare", {
+    official: false,
+    purpose: "tunnel",
+    defaultAlias: `tunnel-${ctx.config.project}-${ctx.env}`.slice(0, 41),
+  });
+  const alias = values(ctx)["@cloudflare"]!;
+  const client = new CloudflareTunnels(token, ctx.fetcher);
+  const zoneId =
+    before.cloudflareZoneId ??
+    (await ctx.ui.input("目标 Zone ID（仅核验此区域）")).trim();
+  const zone = await client.zone(before.cloudflareAccountId, zoneId);
+  const hostname = before.appOrigin && new URL(before.appOrigin).hostname;
+  const dnsHostname =
+    hostname && (hostname === zone.name || hostname.endsWith(`.${zone.name}`))
+      ? hostname
+      : zone.name;
+  await client.dnsRecords(before.cloudflareAccountId, zoneId, dnsHostname);
+  await client.tunnels(before.cloudflareAccountId);
+  ctx.data.profiles[projectKey(ctx.config.project, ctx.env)] = {
+    ...before,
+    cloudflareZoneId: zoneId,
+    "@cloudflareTunnelManagement": alias,
+  };
+  runtime(ctx).statuses = statuses;
+  ctx.ui.log(
+    "Tunnel 管理 Token 已验证读取权限并绑定；写入权限在具体操作时核验，官方登录与 CI Token 绑定保留。",
+  );
 }
 async function supabaseClient(ctx: Context): Promise<Supabase> {
   if (values(ctx)["@supabaseSource"] === "cli") {
@@ -823,6 +889,10 @@ async function cloudflareAccount(ctx: Context): Promise<void> {
       "appOrigin",
       "siteOrigin",
       "cloudflareToken",
+      "cloudflareZoneId",
+      "cloudflareTunnelId",
+      "cloudflareTunnelToken",
+      "@cloudflareTunnelManagement",
     ])
       delete values(ctx)[key];
   }
@@ -944,6 +1014,11 @@ async function selectSupabase(ctx: Context): Promise<void> {
     ))
   )
     throw new ConnectionCancelled();
+  if (previous !== ref) {
+    delete values(ctx).supabaseCleanupKey;
+    values(ctx).cleanupEnabled = "false";
+    values(ctx).syntheticFilesEnabled = "false";
+  }
   if (identity) {
     Object.assign(values(ctx), {
       "@supabaseIdentity": identity.id,
@@ -1032,6 +1107,12 @@ async function authOrigins(ctx: Context): Promise<void> {
 async function migrations(ctx: Context): Promise<void> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
+  if (ctx.config.migrationStrategy !== "supabase-cli")
+    throw new Error(
+      ctx.config.migrationStrategy === "project-managed"
+        ? "本项目使用自己的迁移流程与账本；请按项目文档执行，不运行官方 CLI，不自动 repair 或补写历史。"
+        : "项目映射尚未明确 migrationStrategy；请先按项目既有账本声明策略，再运行迁移。未安装 CLI 或连接数据库。",
+    );
   if (ctx.ensureSupabaseCli && !(await ctx.ensureSupabaseCli())) {
     ctx.ui.log("已取消迁移，未请求数据库密码或连接数据库。");
     return;
@@ -1590,6 +1671,42 @@ export const modules: Module[] = [
         id: "sync",
         title: "同步 GitHub Environment Variables / Secrets",
         execute: syncGithub,
+      },
+    ],
+  },
+  {
+    id: "deployment",
+    title: "AWS / Zero Trust Tunnel 部署准备",
+    actions: [
+      {
+        id: "configure",
+        title: "配置 AWS 目标 / 固定镜像 / 应用域名",
+        execute: configureDeployment,
+      },
+      {
+        id: "management-token",
+        title: "配置专用 Tunnel 管理 Token（Zone/DNS 权限）",
+        execute: (ctx) => connection(ctx, tunnelManagementCredential),
+      },
+      {
+        id: "tunnel",
+        title: "配置独立 Tunnel / DNS / 读取连接 Token",
+        execute: async (ctx) => configureTunnel(ctx, await tunnelClient(ctx)),
+      },
+      {
+        id: "host",
+        title: "只读检查 SSH 主机 / Docker / 资源余量",
+        execute: checkDeploymentHost,
+      },
+      {
+        id: "plan",
+        title: "检查缺失配置与部署计划（不发布）",
+        execute: showDeploymentPlan,
+      },
+      {
+        id: "token-file",
+        title: "导出 Tunnel Token 私密文件",
+        execute: exportTunnelToken,
       },
     ],
   },

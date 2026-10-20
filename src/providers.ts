@@ -1,5 +1,5 @@
 type Fetcher = typeof fetch;
-type Method = "GET" | "POST" | "PATCH";
+type Method = "GET" | "POST" | "PATCH" | "PUT";
 export class ApiError extends Error {
   status: number;
   constructor(status: number) {

@@ -1,5 +1,16 @@
 # 2026-10-19 本地验收
 
+## 2026-10-20 AWS / Tunnel 准备（0.4.0）
+
+- 180 项本地合成测试通过，工具模块行覆盖 96.18%、分支 85.28%；lint、typecheck、build、format 与独立 tarball 安装检查通过。新增 Tunnel/DNS、只读 SSH、部署计划、Token 导出、账号/项目切换凭据清理回归；含独立管理 Token 权限拒绝、未声明/不同拓扑拒绝改写入口，以及非显式官方 CLI 迁移策略拒绝运行。
+- 固定官方 API 的真实只读检查成功列出活动 Zone 与远程 Tunnel；没有以此测试创建资源、覆盖 DNS 或读取 Tunnel Token。
+- 实际 DNS 读取发现 Wrangler OAuth 返回 403；工具因此增加专用管理 Token 来源，明确最小权限并保留官方/CI 原绑定。4 项合成回归验证有/无应用域名时均核验 DNS，拒绝后回滚；真实新 Token 仍需用户隐藏输入后验证。
+- 经严格既有主机密钥 SSH 只读验证用户确认的 shimau 主机：x86_64、Docker/Compose 可用；四个既有容器正常，API 端口 loopback。未安装软件或修改服务。
+- 本机旧安装无法识别 Fulcord 新 AWS 映射的退出问题已复现；更新至 0.4.0 后实际 PTY 选择当前项目、staging、进入新建保险库口令成功，并取消退出。没有代用户设置真实保险库口令。
+- 字段完整检查和远端验收明确区分；AWS 发布仍需专用 Tunnel、正确架构的 registry digest、独立运行文件和数据库迁移。Fulcord Docker/Pages 验证证据由消费仓库维护。
+
+## 原独立工具验收
+
 验证对象：`@royorange/project-setup` 0.3.0，独立维护于 `royorange/deployment`。
 
 - `corepack pnpm lint`、`typecheck`、`test:coverage`、`build`、`format:check`、`test:package` 均成功。

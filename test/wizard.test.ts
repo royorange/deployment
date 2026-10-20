@@ -27,6 +27,9 @@ test("switching Cloudflare account clears resource names and origins from the pr
         [projectKey("fulcord", "staging")]: {
           "@cloudflare": "cloudflare/personal",
           cloudflareAccountId: account,
+          cloudflareZoneId: "d".repeat(32),
+          cloudflareTunnelId: "11111111-2222-3333-4444-555555555555",
+          cloudflareTunnelToken: "fixture-old-tunnel-token",
           pagesProject: "old-project",
           workerName: "old-worker",
           appOrigin: "https://old.example",
@@ -47,6 +50,9 @@ test("switching Cloudflare account clears resource names and origins from the pr
   assert.equal(values(ctx).cloudflareAccountId, nextAccount);
   assert.equal(values(ctx).pagesProject, undefined);
   assert.equal(values(ctx).appOrigin, undefined);
+  assert.equal(values(ctx).cloudflareZoneId, undefined);
+  assert.equal(values(ctx).cloudflareTunnelId, undefined);
+  assert.equal(values(ctx).cloudflareTunnelToken, undefined);
 });
 function scripted(
   selects: string[],
@@ -74,7 +80,7 @@ function scripted(
   };
 }
 async function config() {
-  return validateConfig(
+  const current = validateConfig(
     JSON.parse(
       await readFile(
         new URL("../examples/fulcord.json", import.meta.url),
@@ -82,6 +88,37 @@ async function config() {
       ),
     ),
   );
+  // Keep exercising the supported Worker workflow independently of AWS defaults.
+  const fields = [
+    "cloudflareAccountId",
+    "cloudflareToken",
+    "pagesProject",
+    "workerName",
+    "siteOrigin",
+    "appOrigin",
+    "supabaseUrl",
+    "supabasePublishableKey",
+  ];
+  return validateConfig({
+    ...current,
+    variables: Object.fromEntries(
+      Object.entries(current.variables).filter(([field]) =>
+        fields.includes(field),
+      ),
+    ),
+    defaults: {
+      staging: {
+        pagesProject: "fulcord-web",
+        workerName: "fulcord-app-staging",
+        siteOrigin: "https://staging.fulcord-web.pages.dev",
+      },
+    },
+    envExports: current.envExports?.filter(
+      (preset) =>
+        preset.path.startsWith("deploy/") ||
+        preset.path === "apps/web/.env.local",
+    ),
+  });
 }
 
 test("complete wizard configures two providers, reuses Pages, exports correct CI secrets and isolates production", async () => {

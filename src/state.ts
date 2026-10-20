@@ -10,6 +10,7 @@ const bindings = new Set([
   "@cloudflareProfile",
   "@cloudflareIdentity",
   "@cloudflareDeploy",
+  "@cloudflareTunnelManagement",
   "@supabase",
   "@supabaseSource",
   "@supabaseProfile",

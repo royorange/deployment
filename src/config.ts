@@ -32,11 +32,61 @@ export const fields: Record<string, Field> = {
     secret: false,
     kind: "ref",
   },
+  cloudflareZoneId: {
+    label: "Cloudflare Zone ID",
+    secret: false,
+    kind: "account",
+  },
+  cloudflareTunnelId: {
+    label: "Cloudflare Tunnel ID",
+    secret: false,
+    kind: "text",
+  },
+  cloudflareTunnelToken: {
+    label: "Cloudflare Tunnel 连接 Token",
+    secret: true,
+    kind: "text",
+  },
+  supabaseCleanupKey: {
+    label: "独立清理进程 Supabase Secret Key",
+    secret: true,
+    kind: "text",
+  },
+  deploymentRuntime: {
+    label: "应用运行方式（aws-tunnel）",
+    secret: false,
+    kind: "text",
+  },
+  deploymentTarget: { label: "部署环境", secret: false, kind: "text" },
+  sshTarget: { label: "AWS SSH 别名或 user@host", secret: false, kind: "text" },
+  remoteDirectory: { label: "远端独立部署目录", secret: false, kind: "text" },
+  deploymentImage: {
+    label: "应用镜像（固定 sha256 digest）",
+    secret: false,
+    kind: "text",
+  },
+  tunnelImage: {
+    label: "cloudflared 镜像（固定 sha256 digest）",
+    secret: false,
+    kind: "text",
+  },
+  syntheticFilesEnabled: {
+    label: "开放合成文件（true / false）",
+    secret: false,
+    kind: "text",
+  },
+  cleanupEnabled: {
+    label: "启用独立清理调度（true / false）",
+    secret: false,
+    kind: "text",
+  },
 };
 export type Config = {
   version: 1;
   project: string;
   repository?: string;
+  deploymentTopology?: "aws-tunnel" | "worker-private-origin";
+  migrationStrategy?: "supabase-cli" | "project-managed";
   environments: string[];
   variables: Record<string, string>;
   defaults?: Record<string, Values>;
@@ -128,6 +178,16 @@ export function validateConfig(input: unknown): Config {
   if (config.repository && !repository(config.repository))
     throw new Error("GitHub 仓库应为 owner/repo。");
   if (
+    config.deploymentTopology !== undefined &&
+    !["aws-tunnel", "worker-private-origin"].includes(config.deploymentTopology)
+  )
+    throw new Error("未知部署拓扑，未推断应用与私有入口关系。");
+  if (
+    config.migrationStrategy !== undefined &&
+    !["supabase-cli", "project-managed"].includes(config.migrationStrategy)
+  )
+    throw new Error("未知迁移策略，未推断或修改迁移账本。");
+  if (
     !Array.isArray(config.environments) ||
     !config.environments.length ||
     config.environments.some(
@@ -192,7 +252,9 @@ export function validateConfig(input: unknown): Config {
   const used = new Set<string>();
   for (const [field, target] of Object.entries(config.variables)) {
     if (!Object.hasOwn(definitions, field))
-      throw new Error("变量映射引用了禁止导出的或未知的字段。");
+      throw new Error(
+        "项目映射包含当前工具不支持的字段；请更新 project-setup 后重试。",
+      );
     if (typeof target !== "string") throw new Error("变量名不合法。");
     variableName(target);
     if (

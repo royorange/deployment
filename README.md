@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.3.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.4.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -76,7 +76,26 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 
 默认缓存位于 `~/.cache/project-setup/tools/supabase/<version>/<platform-arch>`，支持 `XDG_CACHE_HOME`。缓存使用前检查完整性、文件类型、所有者及私有权限；符号链接、硬链接、损坏压缩包、路径穿越与并发安装会停止并给出处理线索。下载失败可重试同一固定版本，不自动使用 latest。当前本机验收为 macOS arm64；Linux/macOS 的 CI 矩阵覆盖 Node 22/24，其他平台的元数据与合成测试不代表真实机器验收。
 
+只有 manifest 明确声明 `migrationStrategy: "supabase-cli"` 才能使用官方迁移入口；`project-managed` 或未声明时，在安装 CLI、读取密码与连接数据库前拒绝。Fulcord 示例声明官方 CLI，Zoncord 示例声明项目自管。此门禁不代表已探测远端历史，不能自动证明账本兼容。
+
 数据库迁移使用冻结的 SQL 快照、显式 Ref、官方迁移历史与 `db push --dry-run`。应用前须审阅 SQL 并完整输入目标 Ref；API 资源范围或官方 profile 身份会在相关步骤重新核验。数据库密码仅通过子进程环境传递。scope PAT 权限不等于数据库密码权限，不能把它当成数据库操作的完整限制。工具不自动 reset/repair，不推送 seed/Vault 设置。
+
+## AWS 与 Cloudflare Tunnel 部署准备
+
+0.4 增加「AWS / Zero Trust Tunnel 部署准备」模块。当前自动配置仅支持 manifest 明确声明 `deploymentTopology: "aws-tunnel"` 的整应用同源拓扑；Fulcord 示例已声明。Zoncord 的 Worker + Access + 私有 API 拓扑不能直接套用，未声明或不同拓扑会拒绝修改入口。工具准备配置与检查，业务容器构建、传输、发布与回滚仍由消费项目的部署脚本负责。
+
+- 录入 SSH 别名/`user@host`、项目与环境独立目录、应用与官方 cloudflared 的固定镜像 digest，以及 HTTPS 自定义应用域名。合成文件与清理调度分别配置；开启合成文件必须同时启用独立清理及其凭据。
+- 复用当前 Cloudflare 账号验证活动 Zone；只复用 `${project}-${environment}` 的专用远程 Tunnel。预览并确认后配置到容器网络 `http://app:3000`，保留无关 ingress 和末尾 404；DNS 仅在无记录时新增，冲突不覆盖。列表或权限失败不当作“资源不存在”。
+- 连接 Token 存入通用保险库；更换 Tunnel 或 Cloudflare 账号会清除旧的项目连接 Token。切换 Supabase 项目同样清除旧清理 Key，并关闭合成文件/清理开关，避免跨项目复用。
+- Wrangler 的 OAuth 不保证具有 DNS 权限。可另配目标账号 Tunnel Edit、目标 Zone Read/DNS Edit 的管理 Token；它保存在独立别名中，保留原 Wrangler 与 CI Token 绑定，不作为容器连接 Token 导出。读取权限通过后仍需在具体写入时核验写权限。
+- SSH 预检只读检查 Docker/Compose、CPU 架构、内存、磁盘和监听端口，严格校验现有主机密钥，不安装软件或绕过 SSH 认证。使用现有 SSH 配置，不将私钥导入工具。
+- 部署计划只返回公开配置，凭据只判断是否已载入；字段完整不代表 Tunnel、数据库迁移或业务应用已验收。Secret 在 GitHub 的名称存在也不代表其值已与当前项目核对。
+
+Tunnel Token 可单独导出为项目内、Git 已忽略的原始私密文件，权限 600；其他运行文件使用项目 manifest 声明的分离 `.env` 预设。导出会显示目标并确认，不能把 Token 当成应用前端 Key。明确新建 Tunnel 后仍无法读取初始配置时，保留并报告新建 ID，不猜测空配置或自动删除资源。
+
+项目映射与工具版本应一同更新；旧工具遇到新字段会停止，需要更新已安装的 `project-setup`，不会忽略未知字段继续运行。macOS/Windows 上的 SSH 检查不证明目标平台 Docker 镜像架构兼容，发布前仍须核对主机架构。
+
+目前仍待通用化的能力：真实 Pages deployment/分支状态读取、分层的就绪引导、原生隔离 `--env-file`、按环境精确 Auth callbacks、项目声明的迁移策略与 bootstrap、自动脱敏审计。现有 Auth 网关检查不验证 executor 或业务数据库；官方 CLI 迁移入口不能用于另有迁移账本的项目。Zoncord 的 `public.schema_migrations` bundle 与 Supabase 官方 CLI 历史不可混用。
 
 ## 本地状态与安全边界
 

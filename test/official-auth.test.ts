@@ -20,6 +20,7 @@ const config = validateConfig({
   version: 1,
   project: "fulcord",
   repository: "royorange/fulcord",
+  migrationStrategy: "supabase-cli",
   environments: ["staging", "production"],
   variables: {
     appOrigin: "APP_ORIGIN",

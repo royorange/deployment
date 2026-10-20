@@ -14,6 +14,7 @@ const key = "sb_publishable_fixture";
 const config = validateConfig({
   version: 1,
   project: "fixture",
+  migrationStrategy: "supabase-cli",
   environments: ["staging"],
   variables: {
     supabaseProjectRef: "PROJECT_REF",
@@ -95,6 +96,48 @@ const connect = (ctx: Context) =>
     .find((module) => module.id === "supabase")!
     .actions.find((action) => action.id === "project")!
     .execute(ctx);
+
+for (const strategy of [undefined, "project-managed"] as const)
+  test(`official migration refuses ${strategy ?? "undeclared"} migration history without installing or connecting`, async () => {
+    const { ctx } = context([]);
+    ctx.config = { ...ctx.config, migrationStrategy: strategy };
+    ctx.data.profiles[projectKey("fixture", "staging")] = {
+      supabaseProjectRef: ref,
+    };
+    ctx.ensureSupabaseCli = async () => {
+      throw new Error("must not install CLI");
+    };
+    ctx.runner = async () => {
+      throw new Error("must not run CLI");
+    };
+    ctx.fetcher = async () => {
+      throw new Error("must not connect");
+    };
+    const before = structuredClone(ctx.data);
+    await assert.rejects(
+      modules
+        .find((module) => module.id === "supabase")!
+        .actions.find((action) => action.id === "migrations")!
+        .execute(ctx),
+      /迁移|migrationStrategy/,
+    );
+    assert.deepEqual(ctx.data, before);
+  });
+
+test("switching Supabase project drops the previous privileged cleanup credential", async () => {
+  const { ctx } = context(["new", "input", "org-fixture", ref]);
+  ctx.data.profiles[projectKey("fixture", "staging")] = {
+    supabaseProjectRef: "a".repeat(20),
+    supabaseCleanupKey: "sb_secret_old_fixture",
+    cleanupEnabled: "true",
+    syntheticFilesEnabled: "true",
+  };
+  await connect(ctx);
+  const profile = ctx.data.profiles[projectKey("fixture", "staging")]!;
+  assert.equal(profile.supabaseCleanupKey, undefined);
+  assert.equal(profile.cleanupEnabled, "false");
+  assert.equal(profile.syntheticFilesEnabled, "false");
+});
 
 for (const mode of ["vault", "memory", "metadata"] as const)
   test(`Supabase token instructions describe the active ${mode} storage mode`, async () => {
