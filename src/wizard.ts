@@ -92,6 +92,8 @@ export type Context = {
   runner: Runner;
   fetcher?: typeof fetch;
   ensureSupabaseCli?: () => Promise<boolean>;
+  deviceDirectory?: string;
+  releaseDirectory?: string;
   save: () => Promise<void>;
   storageMode?: "metadata" | "memory" | "vault";
   vaultReferences?: Record<string, Values>;
@@ -1198,7 +1200,33 @@ async function authOrigins(ctx: Context): Promise<void> {
     ctx.ui.log("Auth URL 已更新。");
   } else ctx.ui.log("已取消 Auth URL 更新，远端设置保持不变。");
 }
-async function migrations(ctx: Context): Promise<void> {
+export type MigrationReleaseResult = {
+  state: "applied" | "up-to-date";
+  ref: string;
+  files: string[];
+};
+export async function releaseMigrations(
+  ctx: Context,
+  expectedCommit?: string,
+): Promise<MigrationReleaseResult | undefined> {
+  try {
+    return await migrations(ctx, true, expectedCommit);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    ) {
+      ctx.ui.log("已取消迁移发布步骤；不会继续发布应用。");
+      return;
+    }
+    throw error;
+  }
+}
+async function migrations(
+  ctx: Context,
+  release = false,
+  expectedCommit?: string,
+): Promise<MigrationReleaseResult | undefined> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
   if (ctx.config.migrationStrategy !== "supabase-cli")
@@ -1234,8 +1262,11 @@ async function migrations(ctx: Context): Promise<void> {
     "数据库密码（仅本次内存使用，不保存、不导出）",
     { secret: true },
   );
-  if (!password || /[\r\n\x00]/.test(password))
-    throw new Error("数据库密码格式无效。");
+  if (!password) {
+    ctx.ui.log("已取消迁移，未连接数据库。");
+    return;
+  }
+  if (/[\r\n\x00]/.test(password)) throw new Error("数据库密码格式无效。");
   ctx.ui.log(
     `目标：${ctx.config.project}/${ctx.env} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
   );
@@ -1253,14 +1284,27 @@ async function migrations(ctx: Context): Promise<void> {
         }
       : undefined,
     verifyResource,
+    expectedCommit,
   );
   try {
-    ctx.ui.log(`已冻结本地迁移快照：${session.files.join(", ")}`);
+    ctx.ui.log(
+      expectedCommit
+        ? `已从 CI 提交 ${expectedCommit} 冻结迁移快照：${session.files.join(", ")}`
+        : `已冻结本地迁移快照：${session.files.join(", ")}`,
+    );
     const pending = await session.preview();
     ctx.ui.log(
       `CLI 预演成功，输出识别到的待执行文件：${pending.join(", ") || "无（未识别到文件名时请用官方 CLI 核对历史）"}。请审阅本地 SQL；工具不会自动判断其破坏性。`,
     );
     if (!pending.length) {
+      if (release && session.upToDate) {
+        ctx.ui.log("官方 CLI 已明确确认远端数据库迁移已是最新；无需重复应用。");
+        return { state: "up-to-date", ref, files: [] };
+      }
+      if (release)
+        throw new Error(
+          "无法确认数据库迁移状态：CLI 输出未识别到待执行文件，也未明确确认 up-to-date；已阻止后续应用发布，请按官方 CLI 核对账本。",
+        );
       ctx.ui.log("没有可审阅的待执行文件清单，本次不应用迁移。");
       return;
     }
@@ -1272,6 +1316,21 @@ async function migrations(ctx: Context): Promise<void> {
     if (answer !== ref) {
       ctx.ui.log("未执行迁移。");
       return;
+    }
+    if (release) {
+      try {
+        await session.apply();
+        await session.preview();
+        if (!session.upToDate) throw new Error("post-apply status unconfirmed");
+      } catch {
+        throw new Error(
+          "迁移可能已应用，但应用后的复验未能明确确认 up-to-date；已阻止后续应用发布。未回滚数据库，也未执行 reset、repair 或 down，请核对远端迁移账本后重试。",
+        );
+      }
+      ctx.ui.log(
+        "官方 CLI db push 已完成且复验为 up-to-date；迁移历史由 Supabase CLI 管理。",
+      );
+      return { state: "applied", ref, files: pending };
     }
     await session.apply();
     ctx.ui.log("官方 CLI db push 已完成，迁移历史由 Supabase CLI 管理。");
@@ -1707,7 +1766,9 @@ export const modules: Module[] = [
       {
         id: "migrations",
         title: "官方 CLI 预演 / 应用数据库迁移",
-        execute: migrations,
+        execute: async (ctx) => {
+          await migrations(ctx);
+        },
       },
       {
         id: "create",
@@ -1915,3 +1976,10 @@ export const operations = {
   status: showStatus,
 };
 export const defaultRunner = run;
+
+export async function releaseCloudflareToken(ctx: Context): Promise<string> {
+  return (
+    ctx.data.credentials[values(ctx)["@cloudflareDeploy"] ?? ""] ??
+    (await cloudflareToken(ctx))
+  );
+}

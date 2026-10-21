@@ -57,7 +57,9 @@ test("six entry homepage, nested back does not exit, and status is local until e
     "back",
     "transfer",
     "back",
+    "services",
     "advanced",
+    "back",
     "back",
     "exit",
   ]);
@@ -126,9 +128,11 @@ test("guide cancel/return recomputes missing requirements and never claims deplo
 });
 test("environment switch computes independent readiness, with no persisted guide cursor", async () => {
   const f = fixture([
+    "services",
     "advanced",
     "environment",
     "production",
+    "back",
     "back",
     "status",
     "back",

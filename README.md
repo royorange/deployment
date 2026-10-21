@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.5.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.6.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -41,9 +41,9 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 
 显式 `--config`、`--root` 会跳过项目选择；单用 `--config` 以启动目录为项目根与相对配置基准，同时指定 `--root` 时以该项目目录为准。已有映射不覆盖。方向键选择、空格勾选、回车确认、Ctrl+C 取消当前向导。结果页停留到你明确返回；已完成的外部写入不会因退出回滚。
 
-## 简单菜单与项目向导（0.5.0）
+## 简单菜单与项目向导（0.6.0）
 
-外层固定六个入口：引导配置、账号与服务、查看状态、导入与导出、项目/环境/高级设置、保存并退出。服务操作完成后停留在当前流程；返回上一级不会退出。项目在启动时选择，切换项目可保存退出后重开，无需输入长路径。
+外层固定六个入口：引导配置、账号/项目/服务、查看状态、导入与导出、部署与发布、保存并退出。项目/环境/高级设置收在账号页。服务操作完成后停留在当前流程；返回上一级不会退出。项目在启动时选择，切换项目可保存退出后重开，无需输入长路径。
 
 建议首次选择“引导配置”，以后用“查看状态 / 补齐缺项”。每项说明用途、当前状态、配置位置和验证方法，可以直接进入对应操作。向导根据当前项目和环境重新计算，不保存虚假的“已完成”游标；取消、失败或手动跳过不会标记成功。状态页默认只读本地配置，联网检查需明确选择；本地配置不等于账号已验证、资源已部署或业务可运行。
 
@@ -56,6 +56,28 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 使用内置 AWS 整站 Tunnel 或独立前台/后台/API 模板可快速初始化；AWS 自动路由模板约定容器服务为 `app:3000`，其他服务名或端口应沿用项目流程。`examples/shimau.json` 提供按 shimau 拓扑整理的无凭据示例。模板是配置起点，实际镜像构建、迁移、发布、回滚和业务检查仍由项目已有流程负责。
 
 Pages 操作支持分别选择前台/后台组件，明确输入真实分支，只读读取部署列表。空项目、所选分支无记录、构建中、失败、已发布和查询未知分别报告；只展示 API 返回并校验过的实际部署 URL。保存为入口需要确认，不自动覆盖自定义域名，不拼接 `staging.<项目>.pages.dev`。状态页保留本次会话的组件检查时间与 API 发布记录；换绑定后失效，重新查询失败不沿用旧成功。API 报告发布成功仍需单独验证域名、Access 和业务功能。
+
+## 部署与 SSH 主机（0.6.0）
+
+“部署与发布”统一提供 Tunnel 创建/配置、运行文件导出、目标主机管理、精确 CI 核验、手动镜像构建和组件发布。Pages 可单独发布；选择全部时先发布应用，失败即停止后续组件，不自动撤销已成功的数据库或其他组件。
+
+设备档案只保存名称、IP/DNS/SSH 别名、用户名和端口，位于 `~/.config/project-setup/devices/devices.json`（支持 `XDG_CONFIG_HOME`），目录 700、文件 600，跨项目复用。认证沿用本机 SSH agent、默认密钥或 SSH 配置，不存密码、私钥内容或常驻网络会话。首次主机指纹必须自行核对，工具不自动接受未知主机；检查与部署关闭 agent/端口转发。内存模式不读取或保存设备档案。项目发布目录由项目配置管理。
+
+项目可声明严格的 `release` 映射，示例见 `examples/fulcord.json`：
+
+- `adapter`：项目内已跟踪的 `deploy/*.mts` 或 `.mjs`，不是任意 shell 字符串。首次调用计划前明确确认信任该提交的代码。
+- `ciWorkflow`：同仓库 CI 的文件名。部署仅支持干净本地 HEAD，核验对应完整 SHA 的最新 CI 成功；新失败、重跑中、fork 或身份未知均阻止。核验源码与迁移时忽略本地 Git 替换对象。
+- `buildWorkflow` / `buildWorkflowRef`：可选镜像构建工作流及其受信运行分支（默认 main）。工作流运行分支与待构建提交分开，完整提交通过 `commit` input 传入。构建只生成镜像/digest，不自动部署应用；将 digest 录入配置并重新导出对应环境运行文件。
+- `environments`、`components`：明确哪些环境可发布，以及 Pages/应用是否需要 SSH 主机和哪种迁移策略。
+- `publicFields`：显式允许传给适配器的公开字段，不允许凭据。敏感文件复用已有隔离导出预设；Pages Token 仅单次注入子进程环境。
+
+适配器协议：固定 Node 参数 `--phase plan|deploy|verify`，标准输入为 JSON `{version:1,project,environment,component,commit,ci:{runId},device?,publicValues}`。输出单个 JSON `{ready,summary,missing,effects}`，不打印 Secret 或原始进程输出。适配器是受信项目代码，负责项目的发布、恢复和专门验收；通用工具不猜测容器布局，也不执行远端返回的命令。
+
+发布顺序：CI/提交检查 → 受信适配器计划 → 用户确认 → 官方迁移预演/应用/再次核验 → 再核对 CI/源码 → 项目部署 → 基础健康验证。迁移是发布阶段，只执行待应用版本，不由每个应用实例启动执行。SQL 从已通过 CI 的提交构造冻结快照；未知 CLI 输出、取消或未确认迁移都会停止应用发布。bootstrap、专用账号和业务验收按项目声明完成，不自动生成默认登录或 seed 数据。项目自管迁移暂明确阻塞自动应用发布，避免混用其账本。
+
+发布回执只含项目、环境、组件、SHA、设备标识、CI run 和阶段状态，默认保存在用户配置目录的 `releases` 下；内存模式仅在本次显示。迁移已完成但应用失败会保留数据库状态，不执行 down/reset/repair。项目适配器另行记录自己的发布与恢复证据。
+
+Fulcord 初始适配器只开放 staging，采用固定 digest 的 amd64 镜像、OCI revision 核验和独立候选目录；需主机具备 sudo -n、Docker Compose、严格 SSH 指纹、至少 768 MiB 可用内存与 4 GiB 可用磁盘，以及镜像仓库拉取权限。同一 SHA 的运行配置改变会拒绝复用该版本。合成文件/cleanup 暂不由此新发布适配器开放。以上是具体消费项目边界，不代表任意新项目已具备同样的发布脚本。
 
 ## Supabase：默认 API 连接
 

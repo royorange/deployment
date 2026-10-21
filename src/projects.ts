@@ -32,6 +32,7 @@ function mapping(input: unknown): Config {
     environments: config.environments,
     variables: config.variables,
     ...(config.setup !== undefined ? { setup: config.setup } : {}),
+    ...(config.release !== undefined ? { release: config.release } : {}),
     ...(config.migrationStrategy !== undefined
       ? { migrationStrategy: config.migrationStrategy }
       : {}),
