@@ -155,6 +155,8 @@ test("topology and auth declarations hide inapplicable provider actions", async 
     "back",
     "cloudflare",
     "back",
+    "deployment",
+    "back",
     "back",
     "exit",
   ]);
@@ -169,6 +171,11 @@ test("topology and auth declarations hide inapplicable provider actions", async 
     (p) => p.message === "Cloudflare — 账号与服务",
   )!;
   assert.ok(!cloudflare.choices.includes("cloudflare.worker"));
+  const deployment = f.prompts.find((p) =>
+    p.choices.includes("deployment.tunnel"),
+  )!;
+  assert.ok(deployment);
+  assert.ok(!deployment.choices.includes("deployment.token-file"));
 });
 test("status can route a missing item to its configuration action and returns to status", async () => {
   let calls = 0;

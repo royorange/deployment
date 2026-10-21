@@ -5,6 +5,7 @@ import { allFields, validateField } from "./config.ts";
 import { validateDevice, type Device } from "./devices.ts";
 import { noSymlinks, writePrivate } from "./files.ts";
 import { assertReleaseCi } from "./release-ci.ts";
+import { releaseRuntimeValues } from "./release-runtime.ts";
 import {
   adapterOutput,
   releaseCheckout,
@@ -94,11 +95,14 @@ export async function runRelease(
   let lock: Awaited<ReturnType<typeof open>> | undefined;
   let lockPath: string | undefined;
   let operationToken: string | undefined;
+  let runtimeSecrets: string[] = [];
   const report = (error: unknown) => {
-    let message = safeMessage(error, ctx);
+    let message = error instanceof Error ? error.message : "操作失败。";
     if (operationToken)
       message = message.split(operationToken).join("[已隐藏]");
-    ctx.ui.log(message);
+    for (const secret of runtimeSecrets)
+      message = message.split(secret).join("[已隐藏]");
+    ctx.ui.log(safeMessage(new Error(message), ctx));
   };
   try {
     if (ctx.releaseDirectory && ctx.storageMode !== "memory") {
@@ -116,12 +120,14 @@ export async function runRelease(
     );
     if (
       !(await ctx.ui.confirm(
-        "允许执行此已提交仓库的发布适配器以读取计划？请先确认信任此版本的项目代码。",
+        `允许执行此已提交仓库的发布适配器以读取计划？请先确认信任此版本的项目代码。${component.runtimeFields?.length ? `该组件将通过stdin读取运行字段：${component.runtimeFields.join(", ")}；后续计划、部署和核验使用同一份配置。` : ""}`,
       ))
     ) {
       receipt.state = "cancelled";
       return receipt;
     }
+    const runtimeValues = await releaseRuntimeValues(ctx, component);
+    runtimeSecrets = Object.values(runtimeValues ?? {}).filter(Boolean);
     const publicValues: Record<string, string> = {};
     for (const field of config.publicFields ?? []) {
       if (allFields(ctx.config)[field]?.secret)
@@ -134,7 +140,7 @@ export async function runRelease(
         );
     }
     const request = {
-      version: 1,
+      version: runtimeValues === undefined ? 1 : 2,
       project: ctx.config.project,
       environment: ctx.env,
       component: component.id,
@@ -142,6 +148,7 @@ export async function runRelease(
       ci: { runId: ci.runId },
       ...(device ? { device } : {}),
       publicValues,
+      ...(runtimeValues === undefined ? {} : { runtimeValues }),
     };
     const extra: NodeJS.ProcessEnv = {};
     if (component.kind === "pages") {
@@ -266,6 +273,7 @@ export async function runRelease(
       if (lockPath && lock) await rm(lockPath, { force: true });
       running.delete(scope);
       operationToken = undefined;
+      runtimeSecrets = [];
     }
   }
 }

@@ -5,6 +5,7 @@ export type ReleaseComponent = {
   kind: "pages" | "application";
   requiresDevice: boolean;
   migrations: "none" | "supabase-cli" | "project-managed";
+  runtimeFields?: string[];
 };
 export type ReleaseConfig = {
   adapter: string;
@@ -103,7 +104,31 @@ export function validateRelease(
     throw new Error("发布组件数量不合法。");
   const ids = new Set<string>();
   for (const item of release.components) {
-    keys(item, ["id", "label", "kind", "requiresDevice", "migrations"]);
+    keys(item, [
+      "id",
+      "label",
+      "kind",
+      "requiresDevice",
+      "migrations",
+      "runtimeFields",
+    ]);
+    if (
+      item.runtimeFields !== undefined &&
+      (!Array.isArray(item.runtimeFields) ||
+        item.runtimeFields.length > 50 ||
+        new Set(item.runtimeFields).size !== item.runtimeFields.length ||
+        item.runtimeFields.some(
+          (field) =>
+            typeof field !== "string" ||
+            !Object.hasOwn(config.variables, field) ||
+            !Object.hasOwn(definitions, field) ||
+            !definitions[field]!.secret ||
+            ["cloudflareToken", "supabaseCleanupKey"].includes(field),
+        ))
+    )
+      throw new Error(
+        "发布运行字段只允许显式项目敏感字段，不能包含账号管理凭据、特权清理Key或未知映射。",
+      );
     if (
       typeof item.id !== "string" ||
       !/^[a-z][a-z0-9-]{0,49}$/.test(item.id) ||

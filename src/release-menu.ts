@@ -25,7 +25,7 @@ export async function releaseMenu(ctx: Context): Promise<void> {
       [
         { name: "部署应用 / API / Pages", value: "deploy" },
         { name: "创建或配置 Tunnel / DNS / 连接 Token", value: "tunnel" },
-        { name: "导出隔离运行配置 / Token 文件", value: "export" },
+        { name: "导入/导出统一 .env（可选）", value: "export" },
         { name: "部署主机（保存 IP、用户名、端口）", value: "devices" },
         { name: "核验 CI / 启动镜像构建", value: "ci" },
         { name: "返回主菜单", value: "back" },
@@ -60,17 +60,16 @@ export async function releaseMenu(ctx: Context): Promise<void> {
         continue;
       }
       if (selected === "export") {
-        const method = await ctx.ui.select("选择运行配置导出方式", [
-          { name: "导出 .env 运行文件", value: "env" },
-          { name: "导出原始 Tunnel Token 文件", value: "token" },
+        const method = await ctx.ui.select("统一配置传输 — 部署无需导出文件", [
+          { name: "导入统一 .env / 旧配置文件", value: "import" },
+          { name: "导出统一 .env / 其他目标", value: "env" },
           { name: "返回", value: "back" },
         ]);
         if (method === "env") await operations.export(ctx);
-        if (method === "token")
-          await modules
-            .find((item) => item.id === "deployment")!
-            .actions.find((item) => item.id === "token-file")!
-            .execute(ctx);
+        if (method === "import") {
+          await operations.import(ctx);
+          await ctx.save();
+        }
         continue;
       }
       const release = ctx.config.release;
@@ -148,7 +147,7 @@ export async function releaseMenu(ctx: Context): Promise<void> {
           !values(ctx).cloudflareTunnelId
         ) {
           ctx.ui.log(
-            "缺少当前环境的独立Tunnel。请先进入本页Tunnel基础设施操作，再导出运行配置。",
+            "缺少当前环境的独立Tunnel。请先进入本页Tunnel基础设施操作，完成后直接部署，无需导出文件。",
           );
           continue;
         }

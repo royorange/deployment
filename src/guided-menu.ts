@@ -161,6 +161,7 @@ async function statusScreen(
   }
 }
 function available(ctx: Context, moduleId: string, actionId: string): boolean {
+  if (moduleId === "deployment" && actionId === "token-file") return false;
   if (
     moduleId === "cloudflare" &&
     actionId === "worker" &&

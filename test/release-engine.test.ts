@@ -136,6 +136,163 @@ test("cancelled migration prevents application deploy and records cancellation",
     await f.close();
   }
 });
+test("v2 runtime fields are frozen per component, stdin only and redacted after profile changes", async () => {
+  const f = await fixture();
+  const logs: string[] = [];
+  try {
+    f.ctx.config.release!.components[0]!.runtimeFields = [
+      "supabasePublishableKey",
+    ];
+    f.ctx.data.profiles[JSON.stringify(["fixture", "staging"])] = {
+      supabasePublishableKey: "sb_publishable_frozen",
+    };
+    f.ctx.ui.log = (line) => logs.push(line);
+    const original = f.ctx.runner;
+    f.ctx.runner = async (cmd, args, options) => {
+      const output = await original(cmd, args, options);
+      if (cmd === process.execPath) {
+        f.ctx.data.profiles[
+          JSON.stringify(["fixture", "staging"])
+        ]!.supabasePublishableKey = "sb_publishable_changed";
+        return JSON.stringify({
+          ready: true,
+          summary: ["sb_publishable_frozen"],
+          missing: [],
+          effects: [],
+        });
+      }
+      return output;
+    };
+    const result = await runRelease(f.ctx, "app", undefined, {
+      migrate: async () => ({
+        state: "up-to-date",
+        ref: "b".repeat(20),
+        files: [],
+      }),
+    });
+    assert.equal(result.state, "health-checked");
+    const calls = f.calls.filter((call) => call.cmd === process.execPath);
+    for (const call of calls) {
+      const request = JSON.parse(call.input!);
+      assert.equal(request.version, 2);
+      assert.deepEqual(request.runtimeValues, {
+        supabasePublishableKey: "sb_publishable_frozen",
+      });
+      assert.ok(
+        !JSON.stringify([call.args, call.env]).includes(
+          "sb_publishable_frozen",
+        ),
+      );
+    }
+    assert.ok(
+      !JSON.stringify([logs, result]).includes("sb_publishable_frozen"),
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("empty runtime fields opt in to v2 without handing adapters project secrets", async () => {
+  const f = await fixture();
+  try {
+    f.ctx.config.release!.components[0]!.runtimeFields = [];
+    f.ctx.config.release!.components[0]!.migrations = "none";
+    const result = await runRelease(f.ctx, "app");
+    assert.equal(result.state, "health-checked");
+    const request = JSON.parse(
+      f.calls.find((call) => call.cmd === process.execPath)!.input!,
+    );
+    assert.equal(request.version, 2);
+    assert.deepEqual(request.runtimeValues, {});
+  } finally {
+    await f.close();
+  }
+});
+test("frozen runtime and operation tokens are redacted before truncating long adapter errors", async () => {
+  for (const kind of ["application", "pages"] as const) {
+    const f = await fixture();
+    const secret = "connector-sensitive-".repeat(100);
+    const logs: string[] = [];
+    try {
+      const component = f.ctx.config.release!.components[0]!;
+      component.kind = kind;
+      component.migrations = "none";
+      component.runtimeFields =
+        kind === "pages" ? [] : ["cloudflareTunnelToken"];
+      f.ctx.config.variables.cloudflareTunnelToken = "CONNECTOR";
+      f.ctx.data.profiles[JSON.stringify(["fixture", "staging"])] = {
+        cloudflareTunnelToken: secret,
+      };
+      f.ctx.ui.log = (line) => logs.push(line);
+      const original = f.ctx.runner;
+      f.ctx.runner = async (cmd, args, options) => {
+        if (cmd === process.execPath) {
+          delete f.ctx.data.profiles[JSON.stringify(["fixture", "staging"])]!
+            .cloudflareTunnelToken;
+          throw new Error(`${"x".repeat(990)}${secret}`);
+        }
+        return original(cmd, args, options);
+      };
+      const result = await runRelease(f.ctx, "app", undefined, {
+        cloudflareToken: async () => secret,
+      });
+      assert.equal(result.state, "failed");
+      assert.ok(!logs.join("\n").includes("connector-"));
+    } finally {
+      await f.close();
+    }
+  }
+});
+test("runtime credentials are not resolved before trust and mismatched Supabase refs block adapters", async () => {
+  for (const trusted of [false, true]) {
+    const f = await fixture();
+    let reads = 0;
+    try {
+      f.ctx.config.release!.components[0]!.runtimeFields = [
+        "supabasePublishableKey",
+      ];
+      f.ctx.ui.confirm = async () => trusted;
+      f.ctx.fetcher = async () => {
+        reads++;
+        throw new Error("unexpected provider access");
+      };
+      f.ctx.data.profiles[JSON.stringify(["fixture", "staging"])] = {
+        supabaseProjectRef: "b".repeat(20),
+        supabaseUrl: `https://${"c".repeat(20)}.supabase.co`,
+        "@supabase": "fixture",
+      };
+      const result = await runRelease(f.ctx, "app");
+      assert.equal(result.state, trusted ? "failed" : "cancelled");
+      assert.equal(reads, 0);
+      assert.ok(!f.calls.some((call) => call.cmd === process.execPath));
+    } finally {
+      await f.close();
+    }
+  }
+});
+test("declared runtime fields cannot read secrets from other environments or management aliases", async () => {
+  const f = await fixture();
+  try {
+    f.ctx.config.release!.components[0]!.runtimeFields = [
+      "cloudflareTunnelToken",
+    ];
+    f.ctx.config.variables.cloudflareTunnelToken = "CONNECTOR";
+    f.ctx.config.release!.components[0]!.migrations = "none";
+    f.ctx.data.profiles[JSON.stringify(["fixture", "production"])] = {
+      cloudflareTunnelToken: "other-env-secret",
+    };
+    const result = await runRelease(f.ctx, "app");
+    assert.equal(result.state, "health-checked");
+    const request = JSON.parse(
+      f.calls.find((call) => call.cmd === process.execPath)!.input!,
+    );
+    assert.deepEqual(request.runtimeValues, {});
+    assert.ok(!JSON.stringify(request).includes("secret"));
+    f.ctx.config.release!.components[0]!.runtimeFields = ["cloudflareToken"];
+    assert.equal((await runRelease(f.ctx, "app")).state, "failed");
+  } finally {
+    await f.close();
+  }
+});
 test("dirty checkout and a failing CI never execute repository adapters", async () => {
   for (const failure of ["dirty", "ci"]) {
     const f = await fixture();

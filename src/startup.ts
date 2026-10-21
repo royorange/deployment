@@ -170,8 +170,8 @@ function awsTemplate(project: string): Config {
     },
     envExports: [
       {
-        label: "AWS 公开部署配置",
-        path: ".project-setup/{environment}/deploy.env",
+        label: "统一项目配置（可选）",
+        path: ".project-setup/{environment}/.env",
         fields: [
           "deploymentTarget",
           "remoteDirectory",
@@ -180,12 +180,10 @@ function awsTemplate(project: string): Config {
           "appOrigin",
           "syntheticFilesEnabled",
           "cleanupEnabled",
+          "supabaseUrl",
+          "supabasePublishableKey",
+          "cloudflareTunnelToken",
         ],
-      },
-      {
-        label: "应用 Supabase 凭据",
-        path: ".project-setup/{environment}/app.env",
-        fields: ["supabaseUrl", "supabasePublishableKey"],
       },
     ],
   };

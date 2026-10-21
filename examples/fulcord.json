@@ -50,52 +50,28 @@
   },
   "envExports": [
     {
-      "label": "Fulcord 应用配置（部署环境；不用于 localhost）",
-      "path": "apps/web/.env.local",
-      "fields": ["supabaseUrl", "supabasePublishableKey", "appOrigin"]
-    },
-    {
-      "label": "Cloudflare 部署公开配置（可传 --env-file）",
-      "path": "deploy/.env.{environment}",
+      "label": "项目统一配置（当前环境）",
+      "path": ".project-setup/{environment}/.env",
       "fields": [
         "cloudflareAccountId",
         "pagesProject",
         "workerName",
         "siteOrigin",
-        "appOrigin"
-      ]
-    },
-    {
-      "label": "AWS 应用独立运行凭据（仅应用，不含清理 Key）",
-      "path": ".fulcord/aws/{environment}/app.env",
-      "fields": ["supabaseUrl", "supabasePublishableKey"]
-    },
-    {
-      "label": "AWS 独立清理凭据（仅清理进程）",
-      "path": ".fulcord/aws/{environment}/cleanup.env",
-      "fields": ["supabaseUrl", "supabaseCleanupKey"]
-    },
-    {
-      "label": "AWS Compose 公开部署配置（不包含凭据）",
-      "path": ".fulcord/aws/{environment}/deploy.env",
-      "fields": [
+        "appOrigin",
+        "supabaseUrl",
+        "supabasePublishableKey",
+        "supabaseProjectRef",
+        "cloudflareZoneId",
+        "cloudflareTunnelId",
+        "cloudflareTunnelToken",
+        "deploymentRuntime",
         "deploymentTarget",
+        "sshTarget",
         "remoteDirectory",
         "deploymentImage",
         "tunnelImage",
-        "appOrigin",
         "syntheticFilesEnabled",
         "cleanupEnabled"
-      ]
-    },
-    {
-      "label": "仅 Pages 落地页公开配置（AWS 应用入口）",
-      "path": ".fulcord/aws/{environment}/pages.env",
-      "fields": [
-        "cloudflareAccountId",
-        "pagesProject",
-        "siteOrigin",
-        "appOrigin"
       ]
     }
   ],
@@ -162,14 +138,16 @@
         "label": "AWS应用与API",
         "kind": "application",
         "requiresDevice": true,
-        "migrations": "supabase-cli"
+        "migrations": "supabase-cli",
+        "runtimeFields": ["supabasePublishableKey", "cloudflareTunnelToken"]
       },
       {
         "id": "pages",
         "label": "Pages公开落地页",
         "kind": "pages",
         "requiresDevice": false,
-        "migrations": "none"
+        "migrations": "none",
+        "runtimeFields": []
       }
     ]
   }

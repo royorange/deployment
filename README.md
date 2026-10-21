@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.6.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.7.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -41,7 +41,7 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 
 显式 `--config`、`--root` 会跳过项目选择；单用 `--config` 以启动目录为项目根与相对配置基准，同时指定 `--root` 时以该项目目录为准。已有映射不覆盖。方向键选择、空格勾选、回车确认、Ctrl+C 取消当前向导。结果页停留到你明确返回；已完成的外部写入不会因退出回滚。
 
-## 简单菜单与项目向导（0.6.0）
+## 简单菜单与项目向导（0.7.0）
 
 外层固定六个入口：引导配置、账号/项目/服务、查看状态、导入与导出、部署与发布、保存并退出。项目/环境/高级设置收在账号页。服务操作完成后停留在当前流程；返回上一级不会退出。项目在启动时选择，切换项目可保存退出后重开，无需输入长路径。
 
@@ -57,21 +57,22 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 
 Pages 操作支持分别选择前台/后台组件，明确输入真实分支，只读读取部署列表。空项目、所选分支无记录、构建中、失败、已发布和查询未知分别报告；只展示 API 返回并校验过的实际部署 URL。保存为入口需要确认，不自动覆盖自定义域名，不拼接 `staging.<项目>.pages.dev`。状态页保留本次会话的组件检查时间与 API 发布记录；换绑定后失效，重新查询失败不沿用旧成功。API 报告发布成功仍需单独验证域名、Access 和业务功能。
 
-## 部署与 SSH 主机（0.6.0）
+## 部署与 SSH 主机（0.7.0）
 
-“部署与发布”统一提供 Tunnel 创建/配置、运行文件导出、目标主机管理、精确 CI 核验、手动镜像构建和组件发布。Pages 可单独发布；选择全部时先发布应用，失败即停止后续组件，不自动撤销已成功的数据库或其他组件。
+“部署与发布”统一提供 Tunnel 创建/配置、可选统一配置导入导出、目标主机管理、精确 CI 核验、手动镜像构建和组件发布。Pages 可单独发布；选择全部时先发布应用，失败即停止后续组件，不自动撤销已成功的数据库或其他组件。
 
 设备档案只保存名称、IP/DNS/SSH 别名、用户名和端口，位于 `~/.config/project-setup/devices/devices.json`（支持 `XDG_CONFIG_HOME`），目录 700、文件 600，跨项目复用。认证沿用本机 SSH agent、默认密钥或 SSH 配置，不存密码、私钥内容或常驻网络会话。首次主机指纹必须自行核对，工具不自动接受未知主机；检查与部署关闭 agent/端口转发。内存模式不读取或保存设备档案。项目发布目录由项目配置管理。
 
 项目可声明严格的 `release` 映射，示例见 `examples/fulcord.json`：
 
-- `adapter`：项目内已跟踪的 `deploy/*.mts` 或 `.mjs`，不是任意 shell 字符串。首次调用计划前明确确认信任该提交的代码。
+- `adapter`：项目内已跟踪的 `deploy/*.mts` 或 `.mjs`，不是任意 shell 字符串。首次调用计划前明确确认信任该提交的代码及其将读取的运行字段。
 - `ciWorkflow`：同仓库 CI 的文件名。部署仅支持干净本地 HEAD，核验对应完整 SHA 的最新 CI 成功；新失败、重跑中、fork 或身份未知均阻止。核验源码与迁移时忽略本地 Git 替换对象。
-- `buildWorkflow` / `buildWorkflowRef`：可选镜像构建工作流及其受信运行分支（默认 main）。工作流运行分支与待构建提交分开，完整提交通过 `commit` input 传入。构建只生成镜像/digest，不自动部署应用；将 digest 录入配置并重新导出对应环境运行文件。
+- `buildWorkflow` / `buildWorkflowRef`：可选镜像构建工作流及其受信运行分支（默认 main）。工作流运行分支与待构建提交分开，完整提交通过 `commit` input 传入。构建只生成镜像/digest，不自动部署应用；将 digest 录入当前环境配置后直接发布，无需导出运行文件。
 - `environments`、`components`：明确哪些环境可发布，以及 Pages/应用是否需要 SSH 主机和哪种迁移策略。
-- `publicFields`：显式允许传给适配器的公开字段，不允许凭据。敏感文件复用已有隔离导出预设；Pages Token 仅单次注入子进程环境。
+- `publicFields`：显式允许传给适配器的公开字段，不允许凭据。Pages 部署 Token 仅单次注入子进程环境。
+- 组件 `runtimeFields`：显式声明该组件需要的项目敏感字段，禁止账号管理 Token、凭据别名和特权清理 Key。声明后使用协议 v2（空数组也采用 v2）；只从当前项目/环境提取。Fulcord 应用仅接收 Publishable Key 与 Tunnel 连接 Token，Pages 为 `[]`。
 
-适配器协议：固定 Node 参数 `--phase plan|deploy|verify`，标准输入为 JSON `{version:1,project,environment,component,commit,ci:{runId},device?,publicValues}`。输出单个 JSON `{ready,summary,missing,effects}`，不打印 Secret 或原始进程输出。适配器是受信项目代码，负责项目的发布、恢复和专门验收；通用工具不猜测容器布局，也不执行远端返回的命令。
+适配器协议：固定 Node 参数 `--phase plan|deploy|verify`，标准输入为 JSON `{version:1,project,environment,component,commit,ci:{runId},device?,publicValues}`。组件声明 `runtimeFields` 时输入改为 `{version:2,...,runtimeValues}`；没有声明的旧适配器继续收到 v1。只有确认信任已提交代码后才按需读取 Key 并构造运行配置；冻结后所有阶段使用同一份数据。敏感值仅经 stdin，完整保险库和账号管理凭据不会传入项目适配器。输出单个 JSON `{ready,summary,missing,effects}`，不打印 Secret 或原始进程输出。适配器是受信项目代码，负责项目的发布、恢复和专门验收；通用工具不猜测容器布局，也不执行远端返回的命令。
 
 发布顺序：CI/提交检查 → 受信适配器计划 → 用户确认 → 官方迁移预演/应用/再次核验 → 再核对 CI/源码 → 项目部署 → 基础健康验证。迁移是发布阶段，只执行待应用版本，不由每个应用实例启动执行。SQL 从已通过 CI 的提交构造冻结快照；未知 CLI 输出、取消或未确认迁移都会停止应用发布。bootstrap、专用账号和业务验收按项目声明完成，不自动生成默认登录或 seed 数据。项目自管迁移暂明确阻塞自动应用发布，避免混用其账本。
 
@@ -129,7 +130,7 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 - SSH 预检只读检查 Docker/Compose、CPU 架构、内存、磁盘和监听端口，严格校验现有主机密钥，不安装软件或绕过 SSH 认证。使用现有 SSH 配置，不将私钥导入工具。
 - 部署计划只返回公开配置，凭据只判断是否已载入；字段完整不代表 Tunnel、数据库迁移或业务应用已验收。Secret 在 GitHub 的名称存在也不代表其值已与当前项目核对。
 
-Tunnel Token 可单独导出为项目内、Git 已忽略的原始私密文件，权限 600；其他运行文件使用项目 manifest 声明的分离 `.env` 预设。导出会显示目标并确认，不能把 Token 当成应用前端 Key。明确新建 Tunnel 后仍无法读取初始配置时，保留并报告新建 ID，不猜测空配置或自动删除资源。
+部署默认从当前环境配置与保险库按组件提供运行参数，不要求导出 Token 或多个运行文件。底层旧 Token 导出 API 兼容保留；Tunnel Token 不能用作应用前端 Key。明确新建 Tunnel 后仍无法读取初始配置时，保留并报告新建 ID，不猜测空配置或自动删除资源。
 
 项目映射与工具版本应一同更新；旧工具遇到新字段会停止，需要更新已安装的 `project-setup`，不会忽略未知字段继续运行。macOS/Windows 上的 SSH 检查不证明目标平台 Docker 镜像架构兼容，发布前仍须核对主机架构。
 
@@ -146,6 +147,8 @@ Tunnel Token 可单独导出为项目内、Git 已忽略的原始私密文件，
 首次隐藏输入并确认至少 12 字符的主口令；以后只需解锁。保险库位于 `~/.config/project-setup/vault.json`（支持 `XDG_CONFIG_HOME`），使用 scrypt 派生密钥与 AES-256-GCM 加密，文件权限 600。主口令不保存，忘记无法恢复；解锁失败或取消会停止，不覆盖旧文件或自动降级。原有 `--vault` 数据与命令继续兼容。macOS 钥匙串自动解锁尚未实现。
 
 `--no-vault` 仅保存公开配置与账号绑定，本次凭据退出后丢弃，不读写保险库。`--memory` 连项目注册记录/绑定也不读取或自动保存；显式初始化配置文件或选择导出仍可写入目标。两者与 `--vault` 互斥。官方 CLI 登录凭据仍由官方工具管理，不复制到保险库；明确标注为临时的 Auth PAT、迁移数据库密码仍仅供对应操作使用。
+
+用户维护入口统一为可选 `.project-setup/{environment}/.env`，导入与导出使用同一默认路径，不再选择 app/deploy/pages 等用途。变量仍可自选，管理 Token 与特权清理 Key 默认不选。导入管理 Token 不能替代对应服务的账号连接。文件是明文且权限为 600；与当前值冲突时仅展示变量名，明确选择保留或替换。旧 `envExports` 声明与旧文件可兼容读取，但不再引导维护多个文件，也不会自动删除。部署由项目适配器内部生成权限隔离的临时/远端运行文件，用户不维护它们。工具不会自动读取或写入这个 `.env`，包括 `--memory` 和 `--no-vault` 模式；只有显式选择导入或导出才访问。
 
 本地 `.env` 导入/导出要求目标在项目内、Git 未跟踪且已忽略；不会自动修改 `.gitignore`。只解析单行 dotenv，不执行插值或 shell。不要将导出文件作为 shell 脚本执行。剪贴板是明文，请按需清理历史；GitHub Secrets 无法回读。GitHub 同步仅写明确选中的项，不自动触发业务部署，不替换环境保护规则。
 

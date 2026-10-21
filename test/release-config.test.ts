@@ -63,3 +63,40 @@ test("official release migrations must match the project ledger declaration", ()
     }),
   );
 });
+test("runtime fields explicitly permit project secrets and reject management credentials and aliases", () => {
+  const variables = {
+    supabasePublishableKey: "KEY",
+    cloudflareTunnelToken: "TUNNEL",
+    cloudflareToken: "MANAGEMENT",
+    supabaseCleanupKey: "CLEANUP",
+    appOrigin: "ORIGIN",
+  };
+  const component = release.components[0]!;
+  for (const runtimeFields of [
+    [],
+    ["supabasePublishableKey", "cloudflareTunnelToken"],
+  ])
+    assert.ok(
+      validateConfig({
+        ...base,
+        variables,
+        release: { ...release, components: [{ ...component, runtimeFields }] },
+      }),
+    );
+  for (const runtimeFields of [
+    ["cloudflareToken"],
+    ["supabaseCleanupKey"],
+    ["@supabase"],
+    ["appOrigin"],
+    ["unknown"],
+    ["cloudflareTunnelToken", "cloudflareTunnelToken"],
+    "bad",
+  ])
+    assert.throws(() =>
+      validateConfig({
+        ...base,
+        variables,
+        release: { ...release, components: [{ ...component, runtimeFields }] },
+      }),
+    );
+});

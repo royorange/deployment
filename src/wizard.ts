@@ -9,6 +9,7 @@ import {
   type Entry,
 } from "./config.ts";
 import { mergeEnv, parseEnv, readPrivate, writePrivate } from "./files.ts";
+import { resolveEnvConflicts, unifiedEnvPath } from "./unified-env.ts";
 import { ApiError, Cloudflare, Supabase, supabaseHealth } from "./providers.ts";
 import {
   CommandUnavailableError,
@@ -1354,7 +1355,7 @@ async function selectedEntries(
   const choices = available.map((entry) => ({
     name: `${entry.name} ${entry.secret ? "[Secret]" : "[Variable]"}`,
     value: entry.name,
-    checked: entry.field !== "cloudflareToken",
+    checked: !["cloudflareToken", "supabaseCleanupKey"].includes(entry.field),
   }));
   if (
     (!allowed || allowed.includes("supabasePublishableKey")) &&
@@ -1374,7 +1375,7 @@ async function selectedEntries(
     return [];
   }
   const selected = await ctx.ui.check(
-    "选择导出项（仅显示变量名；部署 Token 默认不选）",
+    "选择导出项（仅显示变量名；管理Token与特权清理Key默认不选）",
     choices,
   );
   if (selected.includes(ctx.config.variables.supabasePublishableKey!))
@@ -1456,23 +1457,7 @@ async function exportConfig(ctx: Context): Promise<void> {
     ctx.ui.log("JSON 已导出；业务项目自己的部署校验仍须通过。");
     return;
   }
-  let exportPath = ".env.local";
-  let allowed: string[] | undefined;
-  if (destination === "env" && ctx.config.envExports?.length) {
-    const selected = await ctx.ui.select("选择 .env 用途", [
-      ...ctx.config.envExports.map((entry, index) => ({
-        name: entry.label,
-        value: String(index),
-      })),
-      { name: "自选变量与路径", value: "custom" },
-    ]);
-    if (selected !== "custom") {
-      const selectedPreset = ctx.config.envExports[Number(selected)]!;
-      exportPath = selectedPreset.path.replaceAll("{environment}", ctx.env);
-      allowed = selectedPreset.fields;
-    }
-  }
-  const entries = await selectedEntries(ctx, allowed);
+  const entries = await selectedEntries(ctx);
   if (!entries.length) {
     ctx.ui.log("未导出任何变量，目标保持不变。");
     return;
@@ -1493,11 +1478,18 @@ async function exportConfig(ctx: Context): Promise<void> {
   } else {
     const path = await localExportPath(
       ctx.root,
-      await ctx.ui.input(".env 导出路径", { value: exportPath }),
+      await ctx.ui.input("统一 .env 导出路径（明文；部署无需导出）", {
+        value: unifiedEnvPath(ctx.env),
+      }),
       ctx.runner,
     );
     const old = await readPrivate(path);
-    const contents = mergeEnv(old ?? "", output);
+    const selectedOutput = await resolveEnvConflicts(
+      parseEnv(old ?? ""),
+      output,
+      ctx.ui,
+    );
+    const contents = mergeEnv(old ?? "", selectedOutput);
     if (
       await ctx.ui.confirm(`向 ${path} 合并上述变量（已有同名变量将更新）？`)
     ) {
@@ -1648,7 +1640,9 @@ async function importConfig(ctx: Context): Promise<void> {
   else {
     const path = await localExportPath(
       ctx.root,
-      await ctx.ui.input(".env 文件路径", { value: ".env.local" }),
+      await ctx.ui.input("统一 .env 文件路径（可指定旧文件导入）", {
+        value: unifiedEnvPath(ctx.env),
+      }),
       ctx.runner,
     );
     const contents = await readPrivate(path);
@@ -1656,7 +1650,7 @@ async function importConfig(ctx: Context): Promise<void> {
     imported = parseEnv(contents);
   }
   const found = Object.entries(ctx.config.variables).filter(
-    ([, name]) => imported[name],
+    ([field, name]) => field !== "cloudflareToken" && imported[name],
   );
   if (!found.length) {
     ctx.ui.log(
@@ -1672,9 +1666,26 @@ async function importConfig(ctx: Context): Promise<void> {
   for (const [field, name] of found)
     if (selected.includes(field))
       pending[field] = validateField(ctx.config, field, imported[name]!);
-  Object.assign(values(ctx), pending);
+  const current = Object.fromEntries(
+    Object.entries(ctx.config.variables)
+      .filter(([field]) => values(ctx)[field] !== undefined)
+      .map(([field, name]) => [name, values(ctx)[field]!]),
+  );
+  const namedPending = Object.fromEntries(
+    Object.entries(pending).map(([field, value]) => [
+      ctx.config.variables[field]!,
+      value,
+    ]),
+  );
+  const resolved = await resolveEnvConflicts(current, namedPending, ctx.ui);
+  const accepted = Object.fromEntries(
+    Object.entries(pending).filter(([field]) =>
+      Object.hasOwn(resolved, ctx.config.variables[field]!),
+    ),
+  );
+  Object.assign(values(ctx), accepted);
   ctx.ui.log(
-    `已导入 ${Object.keys(pending).length} 项。管理令牌请通过对应服务的“连接账号”导入。`,
+    `已导入 ${Object.keys(accepted).length} 项。管理令牌请通过对应服务的“连接账号”导入。`,
   );
 }
 async function edit(ctx: Context): Promise<void> {
@@ -1982,4 +1993,15 @@ export async function releaseCloudflareToken(ctx: Context): Promise<string> {
     ctx.data.credentials[values(ctx)["@cloudflareDeploy"] ?? ""] ??
     (await cloudflareToken(ctx))
   );
+}
+
+export async function releasePublishableKey(ctx: Context): Promise<void> {
+  const profile = values(ctx);
+  if (
+    profile.supabaseProjectRef &&
+    profile.supabaseUrl &&
+    profile.supabaseUrl !== `https://${profile.supabaseProjectRef}.supabase.co`
+  )
+    throw new Error("Supabase URL 与绑定的 Project Ref 不一致，已停止发布。");
+  await ensurePublishableKey(ctx);
 }
