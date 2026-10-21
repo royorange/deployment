@@ -50,53 +50,105 @@
   },
   "envExports": [
     {
-      "label": "Fulcord 应用配置（部署环境；不用于 localhost）",
-      "path": "apps/web/.env.local",
-      "fields": ["supabaseUrl", "supabasePublishableKey", "appOrigin"]
-    },
-    {
-      "label": "Cloudflare 部署公开配置（可传 --env-file）",
-      "path": "deploy/.env.{environment}",
+      "label": "项目统一配置（当前环境）",
+      "path": ".project-setup/{environment}/.env",
       "fields": [
         "cloudflareAccountId",
         "pagesProject",
         "workerName",
         "siteOrigin",
-        "appOrigin"
-      ]
-    },
-    {
-      "label": "AWS 应用独立运行凭据（仅应用，不含清理 Key）",
-      "path": ".fulcord/aws/{environment}/app.env",
-      "fields": ["supabaseUrl", "supabasePublishableKey"]
-    },
-    {
-      "label": "AWS 独立清理凭据（仅清理进程）",
-      "path": ".fulcord/aws/{environment}/cleanup.env",
-      "fields": ["supabaseUrl", "supabaseCleanupKey"]
-    },
-    {
-      "label": "AWS Compose 公开部署配置（不包含凭据）",
-      "path": ".fulcord/aws/{environment}/deploy.env",
-      "fields": [
+        "appOrigin",
+        "supabaseUrl",
+        "supabasePublishableKey",
+        "supabaseProjectRef",
+        "cloudflareZoneId",
+        "cloudflareTunnelId",
+        "cloudflareTunnelToken",
+        "deploymentRuntime",
         "deploymentTarget",
+        "sshTarget",
         "remoteDirectory",
         "deploymentImage",
         "tunnelImage",
-        "appOrigin",
         "syntheticFilesEnabled",
         "cleanupEnabled"
       ]
-    },
-    {
-      "label": "仅 Pages 落地页公开配置（AWS 应用入口）",
-      "path": ".fulcord/aws/{environment}/pages.env",
-      "fields": [
-        "cloudflareAccountId",
-        "pagesProject",
-        "siteOrigin",
-        "appOrigin"
-      ]
     }
-  ]
+  ],
+  "setup": {
+    "auth": "supabase",
+    "components": [
+      {
+        "id": "site",
+        "title": "公开落地页",
+        "kind": "web",
+        "hosting": "pages",
+        "originField": "siteOrigin",
+        "projectField": "pagesProject",
+        "instructions": "使用当前环境真实Pages分支和已验证入口；AWS应用可访问后单独发布Pages。",
+        "docs": "docs/CLOUDFLARE.md"
+      },
+      {
+        "id": "application",
+        "title": "应用与同源API",
+        "kind": "web",
+        "hosting": "aws",
+        "originField": "appOrigin",
+        "instructions": "运行独立AWS Compose app:3000，经专用Tunnel提供同源Cookie/API。合成文件默认关闭。",
+        "docs": "docs/CLOUDFLARE.md"
+      }
+    ],
+    "requirements": [
+      {
+        "id": "acceptance",
+        "title": "托管业务验收",
+        "purpose": "验证登录和工作空间权限；文件启用时验证RLS、Storage和清理闭环。",
+        "instructions": "迁移不会自动创建测试账号；按Supabase配置文档完成独立测试身份和业务验收。关闭合成文件时不运行文件写入验收。",
+        "docs": "docs/SUPABASE_SETUP.md"
+      }
+    ]
+  },
+  "release": {
+    "adapter": "deploy/release.mts",
+    "ciWorkflow": "ci.yml",
+    "buildWorkflow": "aws-build.yml",
+    "buildWorkflowRef": "main",
+    "environments": ["staging"],
+    "publicFields": [
+      "deploymentImage",
+      "tunnelImage",
+      "appOrigin",
+      "siteOrigin",
+      "remoteDirectory",
+      "pagesProject",
+      "cloudflareAccountId",
+      "deploymentRuntime",
+      "deploymentTarget",
+      "sshTarget",
+      "syntheticFilesEnabled",
+      "cleanupEnabled",
+      "supabaseProjectRef",
+      "supabaseUrl",
+      "cloudflareZoneId",
+      "cloudflareTunnelId"
+    ],
+    "components": [
+      {
+        "id": "application",
+        "label": "AWS应用与API",
+        "kind": "application",
+        "requiresDevice": true,
+        "migrations": "supabase-cli",
+        "runtimeFields": ["supabasePublishableKey", "cloudflareTunnelToken"]
+      },
+      {
+        "id": "pages",
+        "label": "Pages公开落地页",
+        "kind": "pages",
+        "requiresDevice": false,
+        "migrations": "none",
+        "runtimeFields": []
+      }
+    ]
+  }
 }

@@ -74,7 +74,7 @@ test("a new machine imports GitHub variables, exports a local env, restores publ
   };
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env*\n");
+    await writeFile(join(root, ".gitignore"), ".env*\n.project-setup/\n");
     const store = await StateStore.open(
       join(root, "local-state"),
       root,
@@ -93,7 +93,6 @@ test("a new machine imports GitHub variables, exports a local env, restores publ
           "read",
           "export",
           "env",
-          "1",
           "environment",
           "production",
           "edit",
@@ -112,10 +111,11 @@ test("a new machine imports GitHub variables, exports a local env, restores publ
       save: async () => store.save(ctx.data),
     };
     await wizard(ctx);
-    assert.deepEqual(
-      parseEnv(await readFile(join(root, "deploy/.env.staging"), "utf8")),
-      variables,
+    const exported = parseEnv(
+      await readFile(join(root, "deploy/.env.staging"), "utf8"),
     );
+    for (const [name, value] of Object.entries(variables))
+      assert.equal(exported[name], value);
     assert.ok(
       logs.some(
         (line) => line.includes("— 操作结果") && line.includes("导入 5 项"),
@@ -138,13 +138,13 @@ test("a new machine imports GitHub variables, exports a local env, restores publ
     const restored: Context = {
       ...ctx,
       data: reopened.data,
-      ui: scripted(["export", "env", "1", "exit"], ["deploy/.env.restored"]),
+      ui: scripted(["export", "env", "exit"], ["deploy/.env.restored"]),
       save: async () => reopened.save(restored.data),
     };
     await wizard(restored);
     assert.deepEqual(
       parseEnv(await readFile(join(root, "deploy/.env.restored"), "utf8")),
-      variables,
+      exported,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -183,7 +183,7 @@ test("local env import can load on a new machine, and an unmatched file produces
   const root = await mkdtemp(join(tmpdir(), "setup-local-import-"));
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env*\n");
+    await writeFile(join(root, ".gitignore"), ".env*\n.project-setup/\n");
     await writeFile(join(root, ".env.unrelated"), "UNRELATED=value\n", {
       mode: 0o600,
     });
@@ -201,7 +201,7 @@ test("local env import can load on a new machine, and an unmatched file produces
       runner: run,
       save: async () => {},
       ui: scripted(
-        ["import", "env", "import", "env", "exit"],
+        ["import", "env", "import", "env", "replace", "exit"],
         [".env.unrelated", ".env.local"],
         logs,
       ),
@@ -228,7 +228,7 @@ test("empty exports explain the next step and do not create an env file", async 
     env: "staging",
     data: { credentials: {}, profiles: {} },
     save: async () => {},
-    ui: scripted(["export", "env", "custom", "exit"], [], logs),
+    ui: scripted(["export", "env", "exit"], [], logs),
     runner: async () => {
       throw new Error("empty export must not write a file");
     },
@@ -241,7 +241,7 @@ test("public env export does not require an unrelated saved Supabase profile to 
   const root = await mkdtemp(join(tmpdir(), "setup-public-export-"));
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env*\n");
+    await writeFile(join(root, ".gitignore"), ".env*\n.project-setup/\n");
     const ctx: Context = {
       root,
       config,
@@ -260,7 +260,7 @@ test("public env export does not require an unrelated saved Supabase profile to 
       },
       save: async () => {},
       ui: {
-        ...scripted(["export", "env", "custom", "exit"]),
+        ...scripted(["export", "env", "exit"]),
         check: async (_message, choices) =>
           choices
             .filter((choice) => choice.value === "CF_ACCOUNT_ID")
@@ -277,7 +277,9 @@ test("public env export does not require an unrelated saved Supabase profile to 
     };
     await wizard(ctx);
     assert.equal(
-      parseEnv(await readFile(join(root, ".env.local"), "utf8")).CF_ACCOUNT_ID,
+      parseEnv(
+        await readFile(join(root, ".project-setup/staging/.env"), "utf8"),
+      ).CF_ACCOUNT_ID,
       "a".repeat(32),
     );
   } finally {

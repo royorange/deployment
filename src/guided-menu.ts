@@ -1,3 +1,4 @@
+import { releaseMenu } from "./release-menu.ts";
 import { withPagesEvidence } from "./setup-evidence.ts";
 import { setupChecks, type SetupCheck } from "./setup-model.ts";
 import {
@@ -11,6 +12,7 @@ import {
 export type SetupActions = Record<string, (ctx: Context) => Promise<void>>;
 const defaultActions: SetupActions = {
   ...operations,
+  release: releaseMenu,
   ...Object.fromEntries(
     modules.flatMap((module) =>
       module.actions.map((action) => [
@@ -29,10 +31,10 @@ const stateLabels: Record<SetupCheck["state"], string> = {
 };
 const homeChoices = [
   { name: "引导配置 / 继续配置", value: "guide" },
-  { name: "账号与服务", value: "services" },
+  { name: "账号、项目与服务", value: "services" },
   { name: "查看状态 / 补齐缺项", value: "status" },
   { name: "导入与导出", value: "transfer" },
-  { name: "项目、环境与高级设置", value: "advanced" },
+  { name: "部署与发布", value: "release" },
   { name: "保存并退出", value: "exit" },
 ];
 function currentChecks(ctx: Context): SetupCheck[] {
@@ -159,6 +161,7 @@ async function statusScreen(
   }
 }
 function available(ctx: Context, moduleId: string, actionId: string): boolean {
+  if (moduleId === "deployment" && actionId === "token-file") return false;
   if (
     moduleId === "cloudflare" &&
     actionId === "worker" &&
@@ -194,10 +197,15 @@ async function services(ctx: Context, actions: SetupActions): Promise<void> {
           name: module.title,
           value: module.id,
         })),
+        { name: "项目、环境与高级设置", value: "advanced" },
         { name: "返回主菜单", value: "back" },
       ],
     );
     if (selected === "back") return;
+    if (selected === "advanced") {
+      await advanced(ctx, actions);
+      continue;
+    }
     const module = candidates.find((item) => item.id === selected);
     if (!module) continue;
     while (true) {
@@ -262,6 +270,17 @@ export async function guidedWizard(
     if (selected === "services") await services(ctx, actions);
     if (selected === "status") await statusScreen(ctx, actions);
     if (selected === "transfer") await transfer(ctx, actions);
-    if (selected === "advanced") await advanced(ctx, actions);
+    if (selected === "release") {
+      try {
+        await actions.release?.(ctx);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          ["ExitPromptError", "AbortPromptError"].includes(error.name)
+        )
+          throw error;
+        ctx.ui.log(safeMessage(error, ctx));
+      }
+    }
   }
 }
