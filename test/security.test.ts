@@ -52,6 +52,18 @@ test("vault encrypts secrets, authenticates, isolates projects and refuses stale
   }
 });
 
+test("vault API rejects fewer than six characters without creating a file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "setup-test-"));
+  try {
+    const path = join(dir, "vault.json");
+    for (const password of ["", "12345"])
+      await assert.rejects(Vault.open(path, password), /至少 6 个字符/);
+    await assert.rejects(stat(path), { code: "ENOENT" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("private writes reject symlinks and unsafe permissions", async () => {
   const dir = await mkdtemp(join(tmpdir(), "setup-test-"));
   try {

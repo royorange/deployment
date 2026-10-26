@@ -6,6 +6,8 @@ import {
 } from "node:crypto";
 import { readPrivate, writePrivate } from "./files.ts";
 
+export const MIN_VAULT_PASSPHRASE_LENGTH = 6;
+
 export type Values = Record<string, string>;
 export type VaultData = {
   credentials: Values;
@@ -62,7 +64,8 @@ export class Vault {
   private path!: string;
 
   static async open(path: string, password: string): Promise<Vault> {
-    if (password.length < 12) throw new Error("保险库口令至少 12 个字符。");
+    if (password.length < MIN_VAULT_PASSPHRASE_LENGTH)
+      throw new Error(`保险库口令至少 ${MIN_VAULT_PASSPHRASE_LENGTH} 个字符。`);
     const vault = new Vault();
     vault.path = path;
     vault.previous = (await readPrivate(path)) ?? null;
