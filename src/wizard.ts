@@ -389,7 +389,7 @@ async function credential(
       else {
         ctx.ui.log(
           options.purpose === "tunnel"
-            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。"
+            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。请在稍后出现的“隐藏输入”框中粘贴；当前的说明、浏览器确认和 Shell 提示符都不是 Token 输入框。"
             : "API Token：指定账号的 Cloudflare Pages Edit + Workers Scripts Edit；自动列出账号另需 Account Settings Read，也可手填 Account ID。",
         );
         await browser(ctx, "https://dash.cloudflare.com/profile/api-tokens");
@@ -451,20 +451,60 @@ async function cloudflareToken(ctx: Context): Promise<string> {
 async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
   return new Cloudflare(await cloudflareToken(ctx), ctx.fetcher);
 }
-async function tunnelClient(ctx: Context): Promise<CloudflareTunnels> {
-  const alias = values(ctx)["@cloudflareTunnelManagement"];
+async function tunnelClient(
+  ctx: Context,
+): Promise<CloudflareTunnels | undefined> {
+  let alias = values(ctx)["@cloudflareTunnelManagement"];
+  if (!alias) {
+    const source = await ctx.ui.select(
+      "此环境未绑定专用 Tunnel 管理 Token；请选择本次凭据来源（这里不是 Token 输入框）",
+      [
+        {
+          name: "配置专用 Tunnel 管理 Token（推荐；保留账号与 CI 绑定）",
+          value: "dedicated",
+        },
+        {
+          name: "明确复用当前 Cloudflare 登录（需 Tunnel/Zone/DNS 权限）",
+          value: "existing",
+        },
+        { name: "返回，不读取凭据或修改资源", value: "back" },
+      ],
+    );
+    if (source === "back") return;
+    if (source === "dedicated") {
+      await connection(ctx, tunnelManagementCredential);
+      alias = values(ctx)["@cloudflareTunnelManagement"];
+      if (!alias) return;
+    }
+  }
   if (alias) {
     const token = ctx.data.credentials[alias];
     if (!token)
       throw new Error(
-        "请解锁保险库或重新配置 Tunnel 管理 Token；不会改用其他凭据。",
+        "请解锁保险库，或进入“部署与发布 → 创建或配置 Tunnel → 配置专用 Tunnel 管理 Token”重新配置；不会改用其他凭据。仅在“隐藏输入”框中粘贴 Token。",
       );
+    ctx.ui.log(
+      "本次使用已绑定的专用 Tunnel 管理 Token；账号登录与 CI 部署 Token 绑定保持不变。令牌值不显示。",
+    );
     return new CloudflareTunnels(token, ctx.fetcher);
   }
   ctx.ui.log(
-    "将使用现有 Cloudflare 登录。若 DNS 返回 403，请配置专用 Tunnel 管理 API Token（Tunnel Edit、Zone Read、DNS Edit）。",
+    "已明确选择复用当前 Cloudflare 登录，正在读取并验证现有凭据；此处没有 Token 输入框。若需粘贴新 Token，请返回选择“配置专用 Tunnel 管理 Token”，仅在隐藏输入框中输入。",
   );
-  return new CloudflareTunnels(await cloudflareToken(ctx), ctx.fetcher);
+  try {
+    return new CloudflareTunnels(await cloudflareToken(ctx), ctx.fetcher);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    // Official errors may contain credentials; retain only the redacted diagnostic.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      `当前 Cloudflare 登录无法读取或验证，未执行 Tunnel/DNS 操作。请进入“部署与发布 → 创建或配置 Tunnel → 配置专用 Tunnel 管理 Token”，或修复官方 Wrangler 登录；仅在明确的“隐藏输入”框中粘贴 Token，此处不是输入框。诊断：${safeMessage(error, ctx).slice(0, 480)}`,
+    );
+  }
 }
 async function tunnelManagementCredential(ctx: Context): Promise<void> {
   const before = { ...values(ctx) };
@@ -1857,7 +1897,10 @@ export const modules: Module[] = [
       {
         id: "tunnel",
         title: "配置独立 Tunnel / DNS / 读取连接 Token",
-        execute: async (ctx) => configureTunnel(ctx, await tunnelClient(ctx)),
+        execute: async (ctx) => {
+          const client = await tunnelClient(ctx);
+          if (client) await configureTunnel(ctx, client);
+        },
       },
       {
         id: "host",

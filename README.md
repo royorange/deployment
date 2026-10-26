@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.7.2.tgz
+npm install -g .artifacts/royorange-project-setup-0.7.3.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -127,9 +127,12 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 - 复用当前 Cloudflare 账号验证活动 Zone；只复用 `${project}-${environment}` 的专用远程 Tunnel。从已校验的 Tunnel 名称派生容器网络入口 `http://${project}-${environment}:3000`，预览并确认后配置，保留无关 ingress 和末尾 404；DNS 仅在无记录时新增，冲突不覆盖。列表或权限失败不当作“资源不存在”。
 - 旧项目重新配置前，先部署并验证 `${project}-${environment}` 网络别名，同时保留原服务入口，避免运行中断。工具不会自动改写已有线上 Tunnel；旧 `http://app:3000` 路由会显示旧、新地址并要求明确确认。启动或仅预览不会更新路由。
 - 连接 Token 存入通用保险库；更换 Tunnel 或 Cloudflare 账号会清除旧的项目连接 Token。切换 Supabase 项目同样清除旧清理 Key，并关闭合成文件/清理开关，避免跨项目复用。
+- 未绑定专用 Tunnel 管理 Token 时，配置入口先明确选择“配置专用 Token（推荐）/复用当前登录/返回”，不会直接调用 Wrangler。账号登录、CI 部署 Token 与 Tunnel 管理 Token 是独立绑定；更换通用账号或 CI Token 不表示已配置 Tunnel 管理权限。专用凭据验证失败会恢复原绑定，不自动回退到其他 Token。
 - Wrangler 的 OAuth 不保证具有 DNS 权限。可另配目标账号 Tunnel Edit、目标 Zone Read/DNS Edit 的管理 Token；它保存在独立别名中，保留原 Wrangler 与 CI Token 绑定，不作为容器连接 Token 导出。读取权限通过后仍需在具体写入时核验写权限。
 - SSH 预检只读检查 Docker/Compose、CPU 架构、内存、磁盘和监听端口，严格校验现有主机密钥，不安装软件或绕过 SSH 认证。使用现有 SSH 配置，不将私钥导入工具。
 - 部署计划只返回公开配置，凭据只判断是否已载入；字段完整不代表 Tunnel、数据库迁移或业务应用已验收。Secret 在 GitHub 的名称存在也不代表其值已与当前项目核对。
+
+Token 只粘贴到明确标注“隐藏输入”的输入框。权限说明、浏览器确认、菜单及 Shell 提示符都不是 Token 输入框。明确复用官方登录后，工具保留原身份与 Account ID 校验；失败会给出“部署与发布 → 创建或配置 Tunnel → 配置专用 Tunnel 管理 Token”入口，子进程 stderr 仍不显示。如果 Token 已出现在 Shell 或截图中，应先在服务商撤销并重新生成，不再使用该 Token。
 
 部署默认从当前环境配置与保险库按组件提供运行参数，不要求导出 Token 或多个运行文件。底层旧 Token 导出 API 兼容保留；Tunnel Token 不能用作应用前端 Key。明确新建 Tunnel 后仍无法读取初始配置时，保留并报告新建 ID，不猜测空配置或自动删除资源。
 
