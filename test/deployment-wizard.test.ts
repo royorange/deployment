@@ -83,7 +83,7 @@ test("Tunnel setup previews its own environment before creating any remote resou
       throw new Error("unexpected write");
     },
   } as unknown as CloudflareTunnels;
-  await configureTunnel(ctx, client);
+  assert.deepEqual(await configureTunnel(ctx, client), { status: "cancelled" });
   assert.equal(writes, 0);
   assert.match(logs.join("\n"), /fixture-staging/);
   assert.match(logs.join("\n"), /http:\/\/fixture-staging:3000/);

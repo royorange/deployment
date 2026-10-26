@@ -1,3 +1,4 @@
+import { deploymentGuide } from "./deployment-guide.ts";
 import { releaseMenu } from "./release-menu.ts";
 import { withPagesEvidence } from "./setup-evidence.ts";
 import { setupChecks, type SetupCheck } from "./setup-model.ts";
@@ -9,7 +10,7 @@ import {
   type Context,
 } from "./wizard.ts";
 
-export type SetupActions = Record<string, (ctx: Context) => Promise<void>>;
+export type SetupActions = Record<string, (ctx: Context) => Promise<unknown>>;
 const defaultActions: SetupActions = {
   ...operations,
   release: releaseMenu,
@@ -260,13 +261,31 @@ export async function guidedWizard(
   while (true) {
     const selected = await ctx.ui.select(
       `${ctx.config.project} / ${ctx.env} — 配置中心\n${summary(ctx)}`,
-      homeChoices,
+      homeChoices.map((choice) =>
+        choice.value === "guide" &&
+        ctx.config.release?.environments.includes(ctx.env)
+          ? { ...choice, name: "开始 / 继续部署（自动引导）" }
+          : choice,
+      ),
     );
     if (selected === "exit") {
       await ctx.save();
       return;
     }
-    if (selected === "guide") await guide(ctx, actions);
+    if (selected === "guide") {
+      try {
+        if (ctx.config.release?.environments.includes(ctx.env)) {
+          if ((await deploymentGuide(ctx, actions)) === "exit") return;
+        } else await guide(ctx, actions);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          ["ExitPromptError", "AbortPromptError"].includes(error.name)
+        )
+          throw error;
+        ctx.ui.log(safeMessage(error, ctx));
+      }
+    }
     if (selected === "services") await services(ctx, actions);
     if (selected === "status") await statusScreen(ctx, actions);
     if (selected === "transfer") await transfer(ctx, actions);

@@ -3,7 +3,12 @@ import { test } from "node:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { operations, values, type Context } from "../src/wizard.ts";
+import {
+  importUnifiedEnv,
+  operations,
+  values,
+  type Context,
+} from "../src/wizard.ts";
 import { run } from "../src/process.ts";
 async function fixture(answers: string[]) {
   const root = await mkdtemp(join(tmpdir(), "unified-env-"));
@@ -145,6 +150,43 @@ test("explicit env imports cannot bind management tokens from project variables"
     delete values(f.ctx).cloudflareToken;
     await operations.import(f.ctx);
     assert.equal(values(f.ctx).cloudflareToken, undefined);
+  } finally {
+    await f.close();
+  }
+});
+
+test("guide unified import skips source/path menus but keeps selection, conflicts and management exclusion", async () => {
+  const f = await fixture(["env", "keep"]);
+  try {
+    values(f.ctx).appOrigin = "https://imported.example";
+    values(f.ctx).cloudflareTunnelToken = "synthetic-connector-secret";
+    await operations.export(f.ctx);
+    const path = join(f.root, ".project-setup/staging/.env");
+    await writeFile(
+      path,
+      `${await readFile(path, "utf8")}CF_TOKEN='synthetic-management-secret'\n`,
+    );
+    values(f.ctx).appOrigin = "https://keep.example";
+    delete values(f.ctx).cloudflareTunnelToken;
+    const inputs = f.defaults.length;
+    let selected = false;
+    f.ctx.ui.check = async (message, choices) => {
+      selected = true;
+      assert.match(message, /不显示值/);
+      assert.ok(!choices.some((choice) => choice.value === "cloudflareToken"));
+      return choices.map((choice) => choice.value);
+    };
+    await importUnifiedEnv(f.ctx);
+    assert.equal(selected, true);
+    assert.equal(f.defaults.length, inputs);
+    assert.equal(values(f.ctx).appOrigin, "https://keep.example");
+    assert.equal(
+      values(f.ctx).cloudflareTunnelToken,
+      "synthetic-connector-secret",
+    );
+    assert.equal(values(f.ctx).cloudflareToken, undefined);
+    assert.ok(!JSON.stringify(f.logs).includes("synthetic-connector-secret"));
+    assert.ok(!JSON.stringify(f.logs).includes("synthetic-management-secret"));
   } finally {
     await f.close();
   }

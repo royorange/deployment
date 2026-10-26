@@ -1,5 +1,10 @@
+import { isDeepStrictEqual } from "node:util";
 import { allFields, projectKey, validateField } from "./config.ts";
-import { checkSshHost, deploymentPlan } from "./deployment-plan.ts";
+import {
+  checkSshHost,
+  deploymentPlan,
+  type HostPreflight,
+} from "./deployment-plan.ts";
 import { readPrivate, singleLine, writePrivate } from "./files.ts";
 import { localExportPath } from "./process.ts";
 import {
@@ -11,6 +16,11 @@ import {
 } from "./tunnels.ts";
 import type { Values } from "./vault.ts";
 import type { Context } from "./wizard.ts";
+
+export type GuideOperationResult = {
+  status: "verified" | "configured" | "cancelled" | "manual";
+  message?: string;
+};
 
 function current(ctx: Context): Values {
   return (ctx.data.profiles[projectKey(ctx.config.project, ctx.env)] ??= {
@@ -96,10 +106,79 @@ function dnsConflict(
   );
 }
 
+/** Fresh read-only resource evidence; connector and application health are separate. */
+export async function verifyGuideTunnelConfiguration(
+  ctx: Context,
+  client: CloudflareTunnels,
+): Promise<GuideOperationResult> {
+  const values = { ...current(ctx) };
+  const incomplete = {
+    status: "configured" as const,
+    message:
+      "Tunnel 的专用管理凭据、项目绑定或连接 Token 尚未齐全；未读取其他凭据或修改资源。",
+  };
+  if (
+    ctx.config.deploymentTopology !== "aws-tunnel" ||
+    !values.cloudflareAccountId ||
+    !values.cloudflareZoneId ||
+    !values.cloudflareTunnelId ||
+    !values.appOrigin ||
+    !values.cloudflareTunnelToken ||
+    values.cloudflareTunnelToken.length > 16384 ||
+    !/^[A-Za-z0-9_+/=.-]+$/.test(values.cloudflareTunnelToken)
+  )
+    return incomplete;
+  try {
+    const account = validateField(
+      ctx.config,
+      "cloudflareAccountId",
+      values.cloudflareAccountId,
+    );
+    const zoneId = validateField(
+      ctx.config,
+      "cloudflareZoneId",
+      values.cloudflareZoneId,
+    );
+    const tunnelId = validateField(
+      ctx.config,
+      "cloudflareTunnelId",
+      values.cloudflareTunnelId,
+    );
+    const origin = validateField(ctx.config, "appOrigin", values.appOrigin);
+    const hostname = tunnelHostname(new URL(origin).hostname);
+    const name = `${ctx.config.project}-${ctx.env}`;
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return incomplete;
+    const service = tunnelService(`http://${name}:3000`);
+    const zone = await client.zone(account, zoneId);
+    if (hostname !== zone.name && !hostname.endsWith(`.${zone.name}`))
+      return incomplete;
+    const tunnels = await client.tunnels(account);
+    const matches = tunnels.filter((item) => item.name === name);
+    if (matches.length !== 1 || matches[0]!.id !== tunnelId) return incomplete;
+    const configuration = await client.configuration(account, tunnelId);
+    if (
+      !isDeepStrictEqual(
+        configuration,
+        mergeTunnelIngress(configuration, hostname, service),
+      )
+    )
+      return incomplete;
+    const dns = await client.dnsRecords(account, zoneId, hostname);
+    if (dns.length !== 1 || dnsConflict(dns, tunnelId)) return incomplete;
+    return { status: "verified" };
+  } catch {
+    return {
+      status: "configured",
+      message:
+        "Tunnel 专用绑定、路由或代理 CNAME 未通过本次只读核验；请重新配置或检查读取权限。未修改资源，连接器与公网健康仍待发布验证。",
+    };
+  }
+}
+
 export async function configureTunnel(
   ctx: Context,
   client: CloudflareTunnels,
-): Promise<void> {
+): Promise<GuideOperationResult> {
   requireWholeAppTunnel(ctx);
   const values = current(ctx);
   const account = values.cloudflareAccountId;
@@ -140,7 +219,7 @@ export async function configureTunnel(
   let created = false;
   if (!selected) {
     if (!(await ctx.ui.confirm(`确认在上述账号新建独立 Tunnel ${name}？`)))
-      return;
+      return { status: "cancelled" };
     try {
       const records = await client.dnsRecords(account, zone.id, hostname);
       if (dnsConflict(records)) throw new Error("dns-conflict");
@@ -199,7 +278,7 @@ export async function configureTunnel(
         : `确认应用上述 Tunnel 路由与 DNS 配置（${service}）？请先确认应用容器已声明 ${name} 网络别名。`,
     ))
   )
-    return;
+    return { status: "cancelled" };
   try {
     await client.updateIngress(
       account,
@@ -230,7 +309,7 @@ export async function configureTunnel(
         : "临时读取此 Tunnel 的连接 Token，仅用于本次会话？",
     ))
   )
-    return;
+    return { status: "cancelled" };
   let token;
   try {
     token = await client.token(account, selected.id);
@@ -246,6 +325,27 @@ export async function configureTunnel(
       ? "Tunnel 连接 Token 已保存到加密保险库，值不显示。"
       : "Tunnel 连接 Token 已载入本次内存，值不显示。",
   );
+  try {
+    const latest = await client.configuration(account, selected.id);
+    const expected = mergeTunnelIngress(configuration, hostname, service);
+    const dns = await client.dnsRecords(account, zone.id, hostname);
+    if (
+      !isDeepStrictEqual(latest, expected) ||
+      dns.length !== 1 ||
+      dnsConflict(dns, selected.id) ||
+      !values.cloudflareTunnelToken?.trim()
+    )
+      throw new Error("verification-mismatch");
+  } catch {
+    const message =
+      "已记录 Tunnel 配置与连接 Token，但远端路由或代理 CNAME 尚未核验一致；请重新检查，不能视为部署就绪。连接器、应用及公网健康仍待部署验证。";
+    ctx.ui.log(message);
+    return { status: "configured", message };
+  }
+  ctx.ui.log(
+    "已只读核验 Tunnel 路由与代理 CNAME，连接 Token 已载入；连接器、应用及公网健康仍待部署验证。",
+  );
+  return { status: "verified" };
 }
 
 export async function showDeploymentPlan(ctx: Context): Promise<void> {
@@ -316,7 +416,9 @@ export async function configureDeployment(ctx: Context): Promise<void> {
   );
 }
 
-export async function checkDeploymentHost(ctx: Context): Promise<void> {
+export async function checkDeploymentHost(
+  ctx: Context,
+): Promise<HostPreflight | undefined> {
   const target = current(ctx).sshTarget;
   if (!target) {
     ctx.ui.log("尚未配置 SSH 目标，请先填写部署配置。");
@@ -335,6 +437,7 @@ export async function checkDeploymentHost(ctx: Context): Promise<void> {
     ctx.ui.log(
       `主机架构：${result.facts.architecture}；TCP 监听端口：${result.facts.listeningPorts.join(", ") || "无"}`,
     );
+  return result;
 }
 
 export async function exportTunnelToken(ctx: Context): Promise<void> {

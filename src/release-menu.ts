@@ -1,24 +1,11 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { DeviceStore } from "./devices.ts";
-import { deviceMenu, selectDevice } from "./device-menu.ts";
+import { deviceMenu } from "./device-menu.ts";
 import { readReleaseCi } from "./release-ci.ts";
-import { runRelease } from "./release-engine.ts";
+import { openReleaseDevices, runReleaseFlow } from "./release-flow.ts";
 import { releaseCheckout } from "./release-preflight.ts";
-import {
-  modules,
-  operations,
-  safeMessage,
-  values,
-  type Context,
-} from "./wizard.ts";
+import { modules, operations, safeMessage, type Context } from "./wizard.ts";
 
 export async function releaseMenu(ctx: Context): Promise<void> {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  const store = await DeviceStore.open(
-    ctx.deviceDirectory ?? join(base, "project-setup", "devices"),
-    { memory: ctx.storageMode === "memory" },
-  );
+  const store = await openReleaseDevices(ctx);
   while (true) {
     const selected = await ctx.ui.select(
       `${ctx.config.project} / ${ctx.env} — 部署与发布`,
@@ -73,6 +60,10 @@ export async function releaseMenu(ctx: Context): Promise<void> {
         continue;
       }
       const release = ctx.config.release;
+      if (selected === "deploy") {
+        await runReleaseFlow(ctx, { store });
+        continue;
+      }
       if (
         !release ||
         !ctx.config.repository ||
@@ -115,55 +106,6 @@ export async function releaseMenu(ctx: Context): Promise<void> {
           );
         }
         continue;
-      }
-      if (selected === "deploy") {
-        const chosen = await ctx.ui.select("选择发布组件", [
-          ...release.components.map((item) => ({
-            name: item.label,
-            value: `component:${item.id}`,
-          })),
-          ...(release.components.length > 1
-            ? [{ name: "依次发布全部（应用先于Pages）", value: "all" }]
-            : []),
-          { name: "返回", value: "back" },
-        ]);
-        if (chosen === "back") continue;
-        const components =
-          chosen === "all"
-            ? [...release.components].sort(
-                (a, b) =>
-                  Number(a.kind === "pages") - Number(b.kind === "pages"),
-              )
-            : release.components.filter(
-                (item) => `component:${item.id}` === chosen,
-              );
-        const device = components.some((item) => item.requiresDevice)
-          ? await selectDevice({ ui: ctx.ui, store, runner: ctx.runner })
-          : undefined;
-        if (components.some((item) => item.requiresDevice) && !device) continue;
-        if (
-          components.some((item) => item.kind === "application") &&
-          ctx.config.deploymentTopology === "aws-tunnel" &&
-          !values(ctx).cloudflareTunnelId
-        ) {
-          ctx.ui.log(
-            "缺少当前环境的独立Tunnel。请先进入本页Tunnel基础设施操作，完成后直接部署，无需导出文件。",
-          );
-          continue;
-        }
-        for (const component of components) {
-          const receipt = await runRelease(
-            ctx,
-            component.id,
-            component.requiresDevice ? device : undefined,
-          );
-          if (receipt.state !== "health-checked") {
-            ctx.ui.log(
-              "本次流程已停止；已完成组件和数据库变更保留，请根据结果重试对应阶段。",
-            );
-            break;
-          }
-        }
       }
     } catch (error) {
       if (

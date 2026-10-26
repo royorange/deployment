@@ -20,3 +20,9 @@ Deployment maintains the standalone `@royorange/project-setup` Node CLI. Consume
 The package compiles TypeScript to `dist` and distributes through a local tarball or reviewed GitHub release asset. No npm publication is required for local use. CI tests and packs without real provider credentials.
 
 The optional human configuration entrypoint is `.project-setup/{environment}/.env`; explicit import/export keeps private file checks, Git ignore enforcement, variable selection and conflict decisions. Legacy `envExports` remains schema-compatible without a multiple-purpose menu. No mode automatically loads or writes this file. `release-runtime.ts` selects only declared secret project fields after adapter trust, and freezes them for protocol-v2 stdin across all phases. Management credentials and cleanup privileges are excluded. Absent `runtimeFields` preserves v1; an empty array opts in to v2 with no runtime secrets. Adapters own isolated runtime materialization and cleanup; human exports are unnecessary for deployment.
+
+## 可恢复部署向导
+
+`deployment-guide.ts` 串联项目适用阶段，`deployment-guide-actions.ts` 复用现有服务操作；`deployment-guide-model.ts` 从字段、设备、会话只读证据及历史摘要计算状态，`deployment-guide-store.ts` 以目标作用域和 CAS 保存导航。公开目标绑定变化清除旧核验，历史记录只展示为待复查。取消、void 返回、缺失连接 Token 或单纯本地字段齐全都不构成发布成功。
+
+`release-flow.ts` 是菜单与向导共用的组件发布入口；`release.ts` 保留 CI、冻结迁移、发布确认及健康检查权责。向导不自行执行迁移或适配器，不从历史摘要跳过这些门禁。`@releaseDeviceId` 是公开导航绑定；显式选中设备已删除时要求重新选择，不回退其他旧设备。只读 provider probes 不提示输入凭据或修改资源，失败时回到对应修复步骤。

@@ -37,6 +37,8 @@ import {
   showDeploymentPlan,
   checkDeploymentHost,
   exportTunnelToken,
+  type GuideOperationResult,
+  verifyGuideTunnelConfiguration,
 } from "./deployment-wizard.ts";
 import type { Values, VaultData } from "./vault.ts";
 import {
@@ -107,14 +109,14 @@ function status(ctx: Context, provider: string, info: LoginStatus): void {
   runtime(ctx).statuses[`${ctx.env}/${provider}`] = info;
 }
 class ConnectionCancelled extends Error {}
-async function connection(
+async function connection<T>(
   ctx: Context,
-  action: (ctx: Context) => Promise<void>,
-): Promise<void> {
+  action: (ctx: Context) => Promise<T>,
+): Promise<T | GuideOperationResult> {
   const before = structuredClone(ctx.data);
   const beforeRuntime = structuredClone(runtime(ctx));
   try {
-    await action(ctx);
+    return await action(ctx);
   } catch (error) {
     const message = safeMessage(error, ctx);
     ctx.data.credentials = before.credentials;
@@ -125,9 +127,13 @@ async function connection(
       error instanceof SupabaseTokenCancelled
     ) {
       ctx.ui.log("已取消切换，原账号与项目绑定保持不变。");
-      return;
+      return { status: "cancelled" };
     }
-    if (error instanceof Error && error.name === "ExitPromptError") throw error;
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
     // Provider causes can contain credentials; retain only the redacted message.
     // eslint-disable-next-line preserve-caught-error
     throw new Error(message);
@@ -450,6 +456,74 @@ async function cloudflareToken(ctx: Context): Promise<string> {
 }
 async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
   return new Cloudflare(await cloudflareToken(ctx), ctx.fetcher);
+}
+/** Check saved bindings only; never acquire a new credential or create a resource. */
+export async function verifyGuideCloudflare(
+  ctx: Context,
+): Promise<GuideOperationResult> {
+  const configured = values(ctx);
+  const alias = configured["@cloudflare"];
+  if (
+    !configured.cloudflareAccountId ||
+    !configured.pagesProject ||
+    (configured["@cloudflareSource"] !== "wrangler" &&
+      (!alias || !ctx.data.credentials[alias]))
+  )
+    return {
+      status: "configured",
+      message:
+        "请先绑定 Cloudflare 账号并载入相应登录凭据、选择 Pages 项目；未读取其他来源凭据。",
+    };
+  try {
+    const client = await cloudflareClient(ctx);
+    const project = await client.pagesProject(
+      configured.cloudflareAccountId,
+      configured.pagesProject,
+    );
+    if (!project)
+      return {
+        status: "configured",
+        message: "绑定的 Pages 项目不存在；请重新选择或在配置步骤明确创建。",
+      };
+    if (project.name !== configured.pagesProject)
+      throw new Error("resource-mismatch");
+    return { status: "verified" };
+  } catch {
+    throw new Error(
+      "Cloudflare 当前登录或 Pages 项目未通过只读核验；请检查登录是否过期、账号归属和项目权限，再重新连接。未创建或更改资源。",
+    );
+  }
+}
+export async function verifyGuideTunnel(
+  ctx: Context,
+): Promise<GuideOperationResult> {
+  const configured = values(ctx);
+  const alias = configured["@cloudflareTunnelManagement"];
+  const token = alias && ctx.data.credentials[alias];
+  if (
+    !token ||
+    !configured.cloudflareAccountId ||
+    !configured.cloudflareZoneId ||
+    !configured.cloudflareTunnelId ||
+    !configured.appOrigin ||
+    !configured.cloudflareTunnelToken
+  )
+    return {
+      status: "configured",
+      message:
+        "请先绑定专用 Tunnel 管理凭据并配置 Zone、Tunnel、应用 Origin 和连接 Token；未复用其他登录或读取新 Token。",
+    };
+  try {
+    return await verifyGuideTunnelConfiguration(
+      ctx,
+      new CloudflareTunnels(token, ctx.fetcher),
+    );
+  } catch {
+    return {
+      status: "configured",
+      message: "专用 Tunnel 管理凭据未通过只读检查；未读取其他凭据或修改资源。",
+    };
+  }
 }
 async function tunnelClient(
   ctx: Context,
@@ -1198,7 +1272,7 @@ async function selectSupabase(ctx: Context): Promise<void> {
     "已读取 URL 和 Publishable Key。Management API 可用不代表项目网关可用；暂停项目需先在控制台恢复。项目状态不能证明数据库迁移已执行或组织额度充足。",
   );
 }
-async function authOrigins(ctx: Context): Promise<void> {
+export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
   const ref = values(ctx).supabaseProjectRef;
   const origin = values(ctx).appOrigin;
   if (!ref || !origin)
@@ -1216,10 +1290,30 @@ async function authOrigins(ctx: Context): Promise<void> {
       ctx,
       `https://supabase.com/dashboard/project/${ref}/auth/url-configuration`,
     );
-    return;
+    return {
+      status: "manual",
+      message: "已提供官方配置页面；尚未读取并核验远端 Auth URL。",
+    };
   }
   const client = await supabaseClient(ctx);
   const old = await client.authOrigins(ref);
+  const callbacks = (value: string) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (
+    typeof old.site_url !== "string" ||
+    typeof old.uri_allow_list !== "string"
+  )
+    throw new Error("Auth URL 配置读取结果不合法；未修改远端设置。");
+  if (
+    old.site_url === origin &&
+    callbacks(old.uri_allow_list).includes(`${origin}/**`)
+  ) {
+    ctx.ui.log("Auth Site URL 与所需回调已只读核验一致；未重复更新远端设置。");
+    return { status: "verified" };
+  }
   const allow = [
     ...new Set([
       ...old.uri_allow_list
@@ -1238,8 +1332,27 @@ async function authOrigins(ctx: Context): Promise<void> {
     )
   ) {
     await client.setAuthOrigins(ref, origin, allow);
-    ctx.ui.log("Auth URL 已更新。");
-  } else ctx.ui.log("已取消 Auth URL 更新，远端设置保持不变。");
+    try {
+      const checked = await client.authOrigins(ref);
+      if (
+        checked.site_url !== origin ||
+        typeof checked.uri_allow_list !== "string" ||
+        callbacks(allow).some(
+          (callback) => !callbacks(checked.uri_allow_list).includes(callback),
+        )
+      )
+        throw new Error("verification-mismatch");
+    } catch {
+      const message =
+        "Auth URL 更新请求已发送，但只读复查尚未确认 Site URL 与全部所需/原有回调一致；请重新检查，不能视为配置完成。";
+      ctx.ui.log(message);
+      return { status: "configured", message };
+    }
+    ctx.ui.log("Auth URL 已更新并只读核验一致。");
+    return { status: "verified" };
+  }
+  ctx.ui.log("已取消 Auth URL 更新，远端设置保持不变。");
+  return { status: "cancelled" };
 }
 export type MigrationReleaseResult = {
   state: "applied" | "up-to-date";
@@ -1670,19 +1783,28 @@ async function readGithub(ctx: Context): Promise<void> {
     `已从 ${repo} / ${ctx.env} 导入 ${Object.keys(pending).length} 项公开变量到本机；可在“查看配置状态”查看。未修改 GitHub。`,
   );
 }
-async function importConfig(ctx: Context): Promise<void> {
-  const source = await ctx.ui.select("导入来源（只读取 manifest 声明的变量）", [
-    { name: "当前终端环境变量", value: "process" },
-    { name: "项目内 .env 文件", value: "env" },
-  ]);
+export async function importUnifiedEnv(ctx: Context): Promise<void> {
+  await importConfig(ctx, { source: "env", path: unifiedEnvPath(ctx.env) });
+}
+async function importConfig(
+  ctx: Context,
+  options: { source?: "env"; path?: string } = {},
+): Promise<void> {
+  const source =
+    options.source ??
+    (await ctx.ui.select("导入来源（只读取 manifest 声明的变量）", [
+      { name: "当前终端环境变量", value: "process" },
+      { name: "项目内 .env 文件", value: "env" },
+    ]));
   let imported: NodeJS.ProcessEnv;
   if (source === "process") imported = process.env;
   else {
     const path = await localExportPath(
       ctx.root,
-      await ctx.ui.input("统一 .env 文件路径（可指定旧文件导入）", {
-        value: unifiedEnvPath(ctx.env),
-      }),
+      options.path ??
+        (await ctx.ui.input("统一 .env 文件路径（可指定旧文件导入）", {
+          value: unifiedEnvPath(ctx.env),
+        })),
       ctx.runner,
     );
     const contents = await readPrivate(path);
@@ -1899,7 +2021,9 @@ export const modules: Module[] = [
         title: "配置独立 Tunnel / DNS / 读取连接 Token",
         execute: async (ctx) => {
           const client = await tunnelClient(ctx);
-          if (client) await configureTunnel(ctx, client);
+          return client
+            ? await configureTunnel(ctx, client)
+            : { status: "cancelled" as const };
         },
       },
       {
