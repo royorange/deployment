@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CloudflareTunnels, mergeTunnelIngress } from "../src/tunnels.ts";
+import { ApiError } from "../src/providers.ts";
 
 const account = "a".repeat(32);
 const zoneId = "b".repeat(32);
@@ -361,4 +362,222 @@ test("existing route updates retain its options while wildcard/catch-all conflic
       () => mergeTunnelIngress({ ingress: rules }, "api.example.com"),
       /冲突|提前匹配/,
     );
+});
+
+test("successful explicit null initial configuration is a distinct snapshot and strict reads still reject it", async () => {
+  for (const configBody of [{ config: null, version: 0 }, { config: null }]) {
+    const api = new CloudflareTunnels("fixture", async (url) =>
+      result(String(url).endsWith("/configurations") ? configBody : tunnel),
+    );
+    assert.deepEqual(await api.configurationSnapshot(account, tunnelId), {
+      config: null,
+      ...(Object.hasOwn(configBody, "version") ? { version: 0 } : {}),
+    });
+    await assert.rejects(api.configuration(account, tunnelId), /配置响应/);
+  }
+});
+
+test("configuration absence never includes permission, missing-resource, malformed or wrong-owner responses", async () => {
+  for (const status of [401, 403, 404, 429, 500]) {
+    let calls = 0;
+    const api = new CloudflareTunnels("fixture", async () => {
+      calls++;
+      return new Response("sensitive-server-body", { status });
+    });
+    await assert.rejects(
+      api.configurationSnapshot(account, tunnelId),
+      (error: Error) =>
+        error instanceof ApiError &&
+        error.status === status &&
+        !JSON.stringify(error).includes("sensitive-server-body") &&
+        !error.message.includes("sensitive-server-body"),
+    );
+    assert.equal(calls, 1);
+  }
+  for (const body of [
+    null,
+    {},
+    { version: 0 },
+    "sensitive-server-body",
+    { config: null, version: 1 },
+    { config: null, version: -1 },
+    { config: null, version: "0" },
+    { config: null, account_id: "c".repeat(32) },
+    { config: null, tunnel_id: "87654321-1234-1234-1234-123456789abc" },
+    { config: { ingress: [null] } },
+  ]) {
+    const api = new CloudflareTunnels("fixture", async (url) =>
+      result(String(url).endsWith("/configurations") ? body : tunnel),
+    );
+    await assert.rejects(
+      api.configurationSnapshot(account, tunnelId),
+      /配置响应|归属/,
+    );
+  }
+  for (const candidate of [
+    { ...tunnel, account_tag: "c".repeat(32) },
+    { ...tunnel, id: "87654321-1234-1234-1234-123456789abc" },
+    { ...tunnel, remote_config: false },
+    { ...tunnel, deleted_at: "2026-01-01" },
+  ]) {
+    for (const config of [
+      null,
+      { ingress: [{ service: "http_status:404" }] },
+    ]) {
+      const api = new CloudflareTunnels("fixture", async (url) =>
+        result(
+          String(url).endsWith("/configurations") ? { config } : candidate,
+        ),
+      );
+      await assert.rejects(
+        api.configurationSnapshot(account, tunnelId),
+        /归属/,
+      );
+    }
+  }
+});
+
+test("snapshot writes preserve structured HTTP failures without body disclosure or write retries", async () => {
+  for (const status of [401, 403, 404, 429, 500]) {
+    let writes = 0;
+    const api = new CloudflareTunnels("fixture", async (url, init) => {
+      if (String(url).endsWith(`/zones/${zoneId}`)) return result(zone);
+      if (String(url).endsWith(`/cfd_tunnel/${tunnelId}`))
+        return result(tunnel);
+      if (init?.method === "PUT") {
+        writes++;
+        return Response.json(
+          { errors: [{ message: "sensitive-server-body" }] },
+          { status },
+        );
+      }
+      return result({ config: null, version: 0 });
+    });
+    await assert.rejects(
+      api.updateIngressFromSnapshot(
+        account,
+        tunnelId,
+        zoneId,
+        "api.example.com",
+        "http://test-staging:3000",
+        { config: null, version: 0 },
+      ),
+      (error: Error) =>
+        error instanceof ApiError &&
+        error.status === status &&
+        !error.message.includes("sensitive-server-body"),
+    );
+    assert.equal(writes, 1);
+  }
+});
+
+test("initial ingress can resume a saved tunnel ID without creating a resource and rechecks the reviewed absence", async () => {
+  const calls: string[] = [];
+  const api = new CloudflareTunnels("fixture", async (url, init) => {
+    calls.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+    if (String(url).endsWith(`/zones/${zoneId}`)) return result(zone);
+    if (String(url).endsWith(`/cfd_tunnel/${tunnelId}`)) return result(tunnel);
+    if (init?.method === "PUT") {
+      assert.deepEqual(JSON.parse(String(init.body)), {
+        config: mergeTunnelIngress(
+          {},
+          "api.example.com",
+          "http://test-staging:3000",
+        ),
+      });
+      return result({});
+    }
+    return result({ config: null, version: 0 });
+  });
+  const reviewed = await api.configurationSnapshot(account, tunnelId);
+  await api.updateIngressFromSnapshot(
+    account,
+    tunnelId,
+    zoneId,
+    "api.example.com",
+    "http://test-staging:3000",
+    reviewed,
+  );
+  assert.equal(calls.filter((call) => call.startsWith("PUT ")).length, 1);
+  assert.ok(!calls.some((call) => call.startsWith("POST ")));
+  assert.equal(
+    calls.filter((call) => call.endsWith(`/cfd_tunnel/${tunnelId}`)).length,
+    2,
+  );
+});
+
+test("snapshot writes refuse configuration or version changes after preview and preserve all existing settings", async () => {
+  const existing = {
+    originRequest: { connectTimeout: 20 },
+    ingress: [
+      { hostname: "other.example.com", service: "http://other:8080" },
+      { service: "http_status:404" },
+    ],
+  };
+  for (const current of [
+    { config: existing, version: 1 },
+    { config: null, version: 0 },
+  ]) {
+    let writes = 0;
+    const api = new CloudflareTunnels("fixture", async (url, init) => {
+      if (init?.method === "PUT") writes++;
+      return result(
+        String(url).endsWith(`/zones/${zoneId}`)
+          ? zone
+          : String(url).endsWith(`/cfd_tunnel/${tunnelId}`)
+            ? tunnel
+            : current,
+      );
+    });
+    await assert.rejects(
+      api.updateIngressFromSnapshot(
+        account,
+        tunnelId,
+        zoneId,
+        "api.example.com",
+        "http://test-staging:3000",
+        { config: null },
+      ),
+      /变化/,
+    );
+    assert.equal(writes, 0);
+  }
+  let writes = 0;
+  const api = new CloudflareTunnels("fixture", async (url, init) => {
+    if (String(url).endsWith(`/zones/${zoneId}`)) return result(zone);
+    if (String(url).endsWith(`/cfd_tunnel/${tunnelId}`)) return result(tunnel);
+    if (init?.method === "PUT") {
+      writes++;
+      assert.deepEqual(JSON.parse(String(init.body)), {
+        config: mergeTunnelIngress(
+          existing,
+          "api.example.com",
+          "http://test-staging:3000",
+        ),
+      });
+      return result({});
+    }
+    return result({ config: existing, version: 2 });
+  });
+  await assert.rejects(
+    api.updateIngressFromSnapshot(
+      account,
+      tunnelId,
+      zoneId,
+      "api.example.com",
+      "http://test-staging:3000",
+      { config: existing, version: 1 },
+    ),
+    /变化/,
+  );
+  assert.equal(writes, 0);
+  await api.updateIngressFromSnapshot(
+    account,
+    tunnelId,
+    zoneId,
+    "api.example.com",
+    "http://test-staging:3000",
+    { config: existing, version: 2 },
+  );
+  assert.equal(writes, 1);
 });

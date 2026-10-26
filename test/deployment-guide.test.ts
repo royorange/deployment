@@ -14,6 +14,7 @@ import { guideBinding } from "../src/deployment-guide-model.ts";
 import { guidedWizard } from "../src/guided-menu.ts";
 import { values } from "../src/wizard.ts";
 import { deploymentGuide } from "../src/deployment-guide.ts";
+import { guideStageBindings } from "../src/deployment-guide-bindings.ts";
 import type { Context } from "../src/wizard.ts";
 import type { ReleaseFlowResult } from "../src/release-flow.ts";
 const sha = "a".repeat(40);
@@ -531,6 +532,234 @@ test("Pages failure exposes direct deploy credential repair without unrelated pr
       },
     );
     assert.equal(repairs, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+async function tunnelFixture(answers: string[]) {
+  const f = await fixture(answers);
+  f.ctx.config.deploymentTopology = "aws-tunnel";
+  Object.assign(f.ctx.config.variables, {
+    cloudflareZoneId: "ZONE",
+    cloudflareTunnelId: "TUNNEL",
+    cloudflareTunnelToken: "CONNECTOR",
+  });
+  values(f.ctx).cloudflareZoneId = "c".repeat(32);
+  f.ctx.config.release!.components[0]!.requiresDevice = true;
+  f.ctx.deviceDirectory = join(f.root, "devices");
+  const devices = await DeviceStore.open(f.ctx.deviceDirectory);
+  await devices.save({
+    id: "host",
+    label: "Host",
+    host: "192.0.2.1",
+    user: "ubuntu",
+    port: 22,
+  });
+  return f;
+}
+
+test("Tunnel partial save preserves unrelated verification and selected device, including across restart", async () => {
+  const f = await tunnelFixture([
+    "skip",
+    "run",
+    "device:host",
+    "run",
+    "run",
+    "exit",
+  ]);
+  const probes: string[] = [];
+  let attempts = 0;
+  let releases = 0;
+  const options = {
+    ...f.options,
+    probe: async (_ctx: Context, stage: Parameters<typeof probeGuide>[1]) => {
+      probes.push(stage);
+      return { status: "verified" as const };
+    },
+    release: async () => {
+      releases++;
+      throw new Error("Tunnel failure must block publication");
+    },
+  };
+  const actions = {
+    "deployment.tunnel": async () => {
+      attempts++;
+      values(f.ctx).cloudflareTunnelId = "00000000-0000-4000-8000-000000000000";
+      await f.ctx.save();
+      throw new Error("Tunnel remote configuration unavailable");
+    },
+  };
+  try {
+    await deploymentGuide(f.ctx, actions, options);
+    assert.equal(attempts, 2);
+    assert.equal(releases, 0);
+    assert.deepEqual(probes, ["cloudflare"]);
+    assert.equal(f.messages.filter((m) => m === "选择部署设备").length, 1);
+    const files = await readdir(f.options.directory);
+    const saved = JSON.parse(
+      await readFile(join(f.options.directory, files[0]!), "utf8"),
+    );
+    assert.equal(saved.cursor, "tunnel");
+    assert.equal(
+      saved.binding,
+      guideBinding(
+        f.ctx.config,
+        values(f.ctx),
+        (await DeviceStore.open(f.ctx.deviceDirectory!)).read("host"),
+        sha,
+      ),
+    );
+    assert.ok(
+      saved.history.some(
+        (h: { stage: string; outcome: string }) =>
+          h.stage === "cloudflare" && h.outcome === "verified",
+      ),
+    );
+    const before = f.messages.length;
+    f.ctx.ui.select = async (message) => {
+      f.messages.push(message);
+      return "exit";
+    };
+    await deploymentGuide(f.ctx, actions, options);
+    assert.ok(
+      f.messages
+        .slice(before)
+        .some((m) => m.includes("阶段 5/") && m.includes("Tunnel 路由")),
+    );
+    assert.equal(
+      f.messages.slice(before).filter((m) => m === "选择部署设备").length,
+      0,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("changing the Cloudflare account invalidates its verification but cannot publish", async () => {
+  const f = await tunnelFixture(["skip", "run", "device:host", "run", "exit"]);
+  let probes = 0;
+  let releases = 0;
+  try {
+    await deploymentGuide(
+      f.ctx,
+      {
+        "deployment.tunnel": async () => {
+          values(f.ctx).cloudflareAccountId = "d".repeat(32);
+          throw new Error("new account needs verification");
+        },
+      },
+      {
+        ...f.options,
+        probe: async () => {
+          probes++;
+          return { status: "verified" };
+        },
+        release: async () => {
+          releases++;
+          throw new Error("must not publish");
+        },
+      },
+    );
+    const files = await readdir(f.options.directory);
+    const saved = JSON.parse(
+      await readFile(join(f.options.directory, files[0]!), "utf8"),
+    );
+    assert.equal(probes, 1);
+    assert.equal(releases, 0);
+    assert.ok(
+      !saved.history.some(
+        (h: { stage: string; outcome: string }) =>
+          h.stage === "cloudflare" && h.outcome === "verified",
+      ),
+    );
+    assert.ok(f.messages.some((m) => m.includes("本次已核验 0/")));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("stage dependency digests isolate targets and never derive from secret content", async () => {
+  const f = await tunnelFixture([]);
+  try {
+    const devices = await DeviceStore.open(f.ctx.deviceDirectory!);
+    const device = devices.read("host")!;
+    const p = values(f.ctx);
+    const bind = (selected = device, commit = sha) =>
+      guideStageBindings(
+        f.ctx.config,
+        p,
+        selected,
+        commit,
+        f.ctx.data.credentials,
+      );
+    p.cloudflareTunnelToken = "synthetic-connector-one";
+    const before = bind();
+    p.cloudflareTunnelToken = "synthetic-connector-two";
+    f.ctx.data.credentials["cloudflare/work"] = "synthetic-token-two";
+    assert.deepEqual(bind(), before, "secret values are never hashed");
+    p.cloudflareTunnelId = "00000000-0000-4000-8000-000000000000";
+    const tunnel = bind();
+    assert.equal(tunnel.cloudflare, before.cloudflare);
+    assert.equal(tunnel.device, before.device);
+    assert.equal(tunnel.auth, before.auth);
+    assert.notEqual(tunnel.tunnel, before.tunnel);
+    assert.notEqual(tunnel.application, before.application);
+    assert.notEqual(tunnel.pages, before.pages);
+    const moved = bind({ ...device, host: "192.0.2.2" });
+    assert.equal(moved.cloudflare, tunnel.cloudflare);
+    assert.equal(moved.auth, tunnel.auth);
+    assert.notEqual(moved.device, tunnel.device);
+    assert.notEqual(moved.application, tunnel.application);
+    assert.notEqual(moved.pages, tunnel.pages);
+    const updated = bind(device, "b".repeat(40));
+    assert.equal(updated.cloudflare, tunnel.cloudflare);
+    assert.notEqual(updated.application, tunnel.application);
+    assert.notEqual(updated.pages, tunnel.pages);
+    p.cloudflareAccountId = "d".repeat(32);
+    const account = bind();
+    assert.notEqual(account.cloudflare, tunnel.cloudflare);
+    assert.notEqual(account.tunnel, tunnel.tunnel);
+    assert.notEqual(account.application, tunnel.application);
+    assert.notEqual(account.pages, tunnel.pages);
+    assert.equal(account.device, tunnel.device);
+    delete p.cloudflareTunnelToken;
+    const missing = bind();
+    assert.notEqual(missing.tunnel, account.tunnel);
+    assert.notEqual(missing.application, account.application);
+    assert.notEqual(missing.pages, account.pages);
+    assert.equal(missing.cloudflare, account.cloudflare);
+    delete f.ctx.data.credentials["cloudflare/work"];
+    const disconnected = bind();
+    assert.notEqual(disconnected.cloudflare, missing.cloudflare);
+    assert.notEqual(disconnected.application, missing.application);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("Tunnel stage repairs its dedicated management credential directly without reselecting device", async () => {
+  const f = await tunnelFixture([
+    "skip",
+    "run",
+    "device:host",
+    "repair-tunnel",
+    "exit",
+  ]);
+  let repairs = 0;
+  try {
+    await deploymentGuide(
+      f.ctx,
+      {
+        "deployment.management-token": async () => {
+          repairs++;
+        },
+      },
+      f.options,
+    );
+    assert.equal(repairs, 1);
+    assert.equal(f.messages.filter((m) => m === "选择部署设备").length, 1);
+    assert.ok(f.messages.at(-1)?.includes("阶段 5/"));
   } finally {
     await f.cleanup();
   }

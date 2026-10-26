@@ -26,3 +26,7 @@ The optional human configuration entrypoint is `.project-setup/{environment}/.en
 `deployment-guide.ts` 串联项目适用阶段，`deployment-guide-actions.ts` 复用现有服务操作；`deployment-guide-model.ts` 从字段、设备、会话只读证据及历史摘要计算状态，`deployment-guide-store.ts` 以目标作用域和 CAS 保存导航。公开目标绑定变化清除旧核验，历史记录只展示为待复查。取消、void 返回、缺失连接 Token 或单纯本地字段齐全都不构成发布成功。
 
 `release-flow.ts` 是菜单与向导共用的组件发布入口；`release.ts` 保留 CI、冻结迁移、发布确认及健康检查权责。向导不自行执行迁移或适配器，不从历史摘要跳过这些门禁。`@releaseDeviceId` 是公开导航绑定；显式选中设备已删除时要求重新选择，不回退其他旧设备。只读 provider probes 不提示输入凭据或修改资源，失败时回到对应修复步骤。
+
+阶段依赖摘要由 `deployment-guide-bindings.ts` 在内存计算，只包含公开字段和凭据存在性，不保存 secret 内容或其摘要。整体目标绑定仍作用于磁盘历史；同次会话仅失效依赖变化的阶段。失败路径先同步目标绑定再保存 cursor，避免部分远端创建成功后重开丢失位置。
+
+Tunnel 初始化采用显式空配置快照；HTTP 错误、缺失 `config` 或已有正版本但无配置均拒绝初始化。写前核验远程 Tunnel 归属、Zone、完整快照与版本；此检查不是服务端原子 CAS。原严格配置读取用于现有路由，初始化须单独确认，错误只输出受控状态和操作建议。

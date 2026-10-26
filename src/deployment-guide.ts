@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { allFields } from "./config.ts";
 import type { Device } from "./devices.ts";
 import { GuideProgressStore } from "./deployment-guide-store.ts";
+import { guideStageBindings } from "./deployment-guide-bindings.ts";
 import {
   deploymentGuideStages,
   guideBinding,
@@ -82,8 +83,15 @@ export async function deploymentGuide(
   if (!selectedDeviceId && progress.deviceId)
     device = devices.read(progress.deviceId);
   if (device) progress.deviceId = device.id;
-  let evidence: Partial<Record<GuideStageId, "verified" | "blocked">> = {};
-  const attempted = new Set<string>();
+  const evidence: Partial<Record<GuideStageId, "verified" | "blocked">> = {};
+  const attempted = new Set<GuideStageId>();
+  let stageBindings = guideStageBindings(
+    ctx.config,
+    values(ctx),
+    device,
+    commit,
+    ctx.data.credentials,
+  );
   let notice =
     "已有配置会复用；远端状态重新核验。发布、迁移及资源变更仍需明确确认。";
   let forced = false;
@@ -124,11 +132,30 @@ export async function deploymentGuide(
   };
   const rebind = () => {
     const binding = guideBinding(ctx.config, values(ctx), device, commit);
-    if (binding !== progress.binding) {
-      evidence = {};
-      attempted.clear();
-      progress = { ...progress, binding, history: [] };
+    const next = guideStageBindings(
+      ctx.config,
+      values(ctx),
+      device,
+      commit,
+      ctx.data.credentials,
+    );
+    const changed = new Set(
+      (Object.keys(next) as GuideStageId[]).filter(
+        (stage) => next[stage] !== stageBindings[stage],
+      ),
+    );
+    for (const stage of changed) {
+      delete evidence[stage];
+      attempted.delete(stage);
     }
+    if (binding !== progress.binding || changed.size) {
+      progress = {
+        ...progress,
+        binding,
+        history: progress.history.filter((item) => !changed.has(item.stage)),
+      };
+    }
+    stageBindings = next;
   };
   rebind();
   while (true) {
@@ -149,7 +176,7 @@ export async function deploymentGuide(
     }
     if (!current) throw new Error("引导阶段声明为空，未执行任何发布。");
     progress.cursor = current.id;
-    const probeKey = `${progress.binding}:${current.id}`;
+    const probeKey = current.id;
     if (
       !forced &&
       remoteStages.has(current.id) &&
@@ -186,17 +213,34 @@ export async function deploymentGuide(
     const missing = current.missingFields.map(
       (f) => allFields(ctx.config)[f]?.label ?? f,
     );
-    const completed = list.filter(complete).length;
+    const configurable = list.filter(
+      (stage) => !["application", "pages", "acceptance"].includes(stage.id),
+    );
+    const configured = configurable.filter((stage) =>
+      stage.id === "import"
+        ? !!progress.importDisposition
+        : !stage.missingFields.length &&
+          (["tunnel", "auth"].includes(stage.id) ||
+            localStageComplete(ctx, { ...stage, state: "configured" }, device)),
+    ).length;
+    const verifiable = list.filter(
+      (stage) =>
+        remoteStages.has(stage.id) ||
+        ["application", "pages"].includes(stage.id),
+    );
+    const verified = verifiable.filter(
+      (stage) => evidence[stage.id] === "verified",
+    ).length;
     const allPublished = list
       .filter((s) => ["application", "pages"].includes(s.id))
       .every(complete);
     const question = [
       `${ctx.config.project} / ${ctx.env} — 部署向导`,
       `阶段 ${number}/${list.length}：${current.title}`,
-      `已处理 ${completed}/${list.length}；当前：${labels[current.state]}`,
+      `配置已就绪 ${configured}/${configurable.length}；本次已核验 ${verified}/${verifiable.length}；当前：${labels[current.state]}`,
       missing.length ? `待补齐：${missing.join("、")}` : "",
       notice,
-      "每次返回都会重算进度；上次结果不代表当前已验证。",
+      "仅目标依赖变化时重查相关阶段；历史结果不代替本次核验。",
     ]
       .filter(Boolean)
       .join("\n");
@@ -213,6 +257,9 @@ export async function deploymentGuide(
         : []),
       ...(current.id === "auth" && ctx.config.setup?.auth !== "supabase"
         ? [{ name: "记录外部配置已完成，业务仍待验收", value: "acknowledge" }]
+        : []),
+      ...(current.id === "tunnel"
+        ? [{ name: "修复 Tunnel 管理 Token / 权限", value: "repair-tunnel" }]
         : []),
       ...(current.id === "pages"
         ? [
@@ -271,16 +318,19 @@ export async function deploymentGuide(
       await save();
       continue;
     }
-    if (choice === "repair-cloudflare") {
-      const action = await ctx.ui.select(
-        "修复发布依赖 — 凭据仅在隐藏输入框输入",
-        [
-          { name: "重新连接 Cloudflare 账号", value: "cloudflare.account" },
-          { name: "配置或更换 Pages 部署 Token", value: "cloudflare.ci-token" },
-          { name: "重新选择 Pages 项目", value: "cloudflare.pages" },
-          { name: "返回当前阶段", value: "back" },
-        ],
-      );
+    if (choice === "repair-cloudflare" || choice === "repair-tunnel") {
+      const action =
+        choice === "repair-tunnel"
+          ? "deployment.management-token"
+          : await ctx.ui.select("修复发布依赖 — 凭据仅在隐藏输入框输入", [
+              { name: "重新连接 Cloudflare 账号", value: "cloudflare.account" },
+              {
+                name: "配置或更换 Pages 部署 Token",
+                value: "cloudflare.ci-token",
+              },
+              { name: "重新选择 Pages 项目", value: "cloudflare.pages" },
+              { name: "返回当前阶段", value: "back" },
+            ]);
       if (action === "back") continue;
       try {
         const repair = actions[action];
@@ -288,7 +338,11 @@ export async function deploymentGuide(
         await repair(ctx);
         rebind();
         delete evidence.pages;
-        if (action !== "cloudflare.ci-token") {
+        if (action === "deployment.management-token") {
+          delete evidence.tunnel;
+          attempted.delete("tunnel");
+          progress.cursor = "tunnel";
+        } else if (action !== "cloudflare.ci-token") {
           delete evidence.cloudflare;
           attempted.clear();
           progress.cursor = "cloudflare";
@@ -296,6 +350,7 @@ export async function deploymentGuide(
         notice = "修复操作已返回，配置已保存；发布仍需重新确认和核验。";
       } catch (error) {
         if (interrupted(error)) throw error;
+        rebind();
         notice = safeMessage(error, ctx);
       }
       await save();
@@ -314,9 +369,14 @@ export async function deploymentGuide(
         continue;
       }
     }
-    // Invalidate this stage and downstream observations before invoking a mutating action.
-    for (const later of list.slice(number - 1)) delete evidence[later.id];
-    attempted.clear();
+    // Retain unrelated observations; publication must be explicitly checked again after adjustments.
+    const invalidated: GuideStageId[] = [current.id];
+    if (!["pages", "acceptance"].includes(current.id))
+      invalidated.push("application", "pages", "acceptance");
+    for (const stage of invalidated) {
+      delete evidence[stage];
+      attempted.delete(stage);
+    }
     try {
       const result = await performGuideStage(ctx, current, {
         actions,
@@ -386,7 +446,7 @@ export async function deploymentGuide(
             ? safeMessage(new Error(outcome.message), ctx)
             : undefined) ??
           (complete(checked)
-            ? "本阶段配置已保存，继续下一步。"
+            ? "本阶段配置已保存；接下来检查下一项。"
             : "操作已返回，但尚未确认本阶段完成；继续处理当前步骤，不会自动发布。");
       }
       forced = false;
@@ -395,13 +455,16 @@ export async function deploymentGuide(
       await save();
     } catch (error) {
       if (interrupted(error)) throw error;
+      rebind();
+      progress.cursor = current.id;
       evidence[current.id] = "blocked";
       record({
         stage: current.id,
         outcome: "failed",
         ...(commit ? { commit } : {}),
       });
-      notice = safeMessage(error, ctx);
+      notice = `${safeMessage(error, ctx)}
+已停在当前阶段；已保存的配置保留，可重试或保存退出。`;
       await save();
       forced = false;
     }

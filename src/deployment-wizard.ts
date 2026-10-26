@@ -7,12 +7,14 @@ import {
 } from "./deployment-plan.ts";
 import { readPrivate, singleLine, writePrivate } from "./files.ts";
 import { localExportPath } from "./process.ts";
+import { ApiError } from "./providers.ts";
 import {
   CloudflareTunnels,
   mergeTunnelIngress,
   tunnelHostname,
   tunnelService,
   type Zone,
+  type TunnelConfigurationSnapshot,
 } from "./tunnels.ts";
 import type { Values } from "./vault.ts";
 import type { Context } from "./wizard.ts";
@@ -21,6 +23,19 @@ export type GuideOperationResult = {
   status: "verified" | "configured" | "cancelled" | "manual";
   message?: string;
 };
+
+function tunnelConfigurationFailure(error: unknown, created: boolean): Error {
+  const prefix = created
+    ? "新建 Tunnel ID 已记录"
+    : "已复用当前项目的 Tunnel ID";
+  const detail =
+    error instanceof ApiError
+      ? `Cloudflare 配置读取失败（HTTP ${error.status}）。${error.status === 401 ? "请重新配置已失效的专用 Tunnel 管理 Token。" : error.status === 403 ? "请检查专用 Token 对目标账号的 Cloudflare Tunnel Edit 权限与资源范围。" : error.status === 404 ? "配置端点未找到，不能视为空配置；请在 Cloudflare 控制台的 Tunnels 中核对该 Tunnel 并初始化路由后重试。" : error.status === 429 ? "请求受限，请稍后重试。" : "请稍后重试或检查 Cloudflare 服务状态。"}`
+      : "无法安全读取或合并现有 Tunnel 配置；API 配置响应无法识别或规则存在冲突，请在 Cloudflare 控制台的 Tunnels 中核对。";
+  return new Error(
+    `${prefix}；${detail} 未覆盖原配置，不会重复新建；修复后继续当前 Tunnel 阶段。`,
+  );
+}
 
 function current(ctx: Context): Values {
   return (ctx.data.profiles[projectKey(ctx.config.project, ctx.env)] ??= {
@@ -247,15 +262,24 @@ export async function configureTunnel(
   ctx.ui.log(`已选择 Tunnel ID：${selected.id}；后续失败不会自动删除此资源。`);
   await ctx.save();
   let configuration;
+  let initialization: TunnelConfigurationSnapshot | undefined;
   try {
     configuration = await client.configuration(account, selected.id);
     mergeTunnelIngress(configuration, hostname, service);
-  } catch {
-    throw new Error(
-      created
-        ? "新建 Tunnel ID 已记录；暂时无法读取安全初始配置，请到 Cloudflare 控制台完成配置初始化后重新运行。未假定 404 为空配置。"
-        : "无法安全读取或合并现有 Tunnel 配置；请到控制台核对，未覆盖原配置。",
-    );
+  } catch (error) {
+    if (error instanceof ApiError)
+      throw tunnelConfigurationFailure(error, created);
+    try {
+      const snapshot = await client.configurationSnapshot(account, selected.id);
+      if (snapshot.config !== null) throw error;
+      initialization = snapshot;
+      configuration = {};
+      ctx.ui.log(
+        "已确认此远程管理 Tunnel 尚无配置；将预览初始化路由，复用已记录的 ID。",
+      );
+    } catch (cause) {
+      throw tunnelConfigurationFailure(cause, created);
+    }
   }
   let records;
   try {
@@ -273,21 +297,34 @@ export async function configureTunnel(
   );
   if (
     !(await ctx.ui.confirm(
-      replacesLegacyApp
-        ? `将此域名的旧 http://app:3000 路由改为 ${service}？请先部署并验证 ${name} 网络别名可用，避免现有应用中断；确认后才应用路由与 DNS 配置。`
-        : `确认应用上述 Tunnel 路由与 DNS 配置（${service}）？请先确认应用容器已声明 ${name} 网络别名。`,
+      initialization
+        ? `确认初始化此独立 Tunnel 的应用路由与 DNS（${service}，末尾 404 规则）？请确认容器已声明 ${name} 网络别名。`
+        : replacesLegacyApp
+          ? `将此域名的旧 http://app:3000 路由改为 ${service}？请先部署并验证 ${name} 网络别名可用，避免现有应用中断；确认后才应用路由与 DNS 配置。`
+          : `确认应用上述 Tunnel 路由与 DNS 配置（${service}）？请先确认应用容器已声明 ${name} 网络别名。`,
     ))
   )
     return { status: "cancelled" };
   try {
-    await client.updateIngress(
-      account,
-      selected.id,
-      zone.id,
-      hostname,
-      service,
-      configuration,
-    );
+    if (initialization) {
+      await client.updateIngressFromSnapshot(
+        account,
+        selected.id,
+        zone.id,
+        hostname,
+        service,
+        initialization,
+      );
+    } else {
+      await client.updateIngress(
+        account,
+        selected.id,
+        zone.id,
+        hostname,
+        service,
+        configuration,
+      );
+    }
     await client.ensureDns(account, zone.id, hostname, selected.id);
   } catch {
     throw new Error(
