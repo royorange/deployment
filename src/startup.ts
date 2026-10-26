@@ -148,7 +148,7 @@ function awsTemplate(project: string): Config {
           hosting: "aws",
           originField: "appOrigin",
           instructions:
-            "此自动路由模板要求容器服务 app 在端口 3000 监听（http://app:3000）；其他入口沿用项目流程，不直接应用该路由。核对运行时凭据、固定镜像与 Tunnel 路由。部署执行和回滚沿用项目脚本；主机预检成功不代表应用已发布。",
+            "此自动路由模板使用 http://项目名-环境:3000；应用容器须在项目私有网络声明同名别名并监听 3000，连接器须加入该网络。旧项目先部署并验证别名，再明确确认改写 Tunnel；其他入口沿用项目流程。核对运行时凭据、固定镜像与 Tunnel 路由。部署执行和回滚沿用项目脚本；主机预检成功不代表应用已发布。",
         },
       ],
       requirements: [
@@ -191,7 +191,10 @@ function awsTemplate(project: string): Config {
 
 async function initialize(root: string, options: Startup): Promise<Config> {
   const source = await options.ui.select("选择配置来源", [
-    { name: "快速起步：AWS 整站 Tunnel（app:3000）", value: "aws-tunnel" },
+    {
+      name: "快速起步：AWS 整站 Tunnel（项目名-环境:3000）",
+      value: "aws-tunnel",
+    },
     { name: "快速起步：独立前台 / 后台 / API", value: "separate-components" },
     { name: "zoncord 模板", value: "zoncord" },
     { name: "通用项目映射", value: "generic" },

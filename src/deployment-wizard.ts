@@ -6,6 +6,7 @@ import {
   CloudflareTunnels,
   mergeTunnelIngress,
   tunnelHostname,
+  tunnelService,
   type Zone,
 } from "./tunnels.ts";
 import type { Values } from "./vault.ts";
@@ -107,6 +108,7 @@ export async function configureTunnel(
   const name = `${ctx.config.project}-${ctx.env}`;
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))
     throw new Error("项目与环境组合的 Tunnel 名称不合法或超过 63 字符。");
+  const service = tunnelService(`http://${name}:3000`);
   const zone = await chooseZone(ctx, client, account);
   const appOrigin = validateField(
     ctx.config,
@@ -121,7 +123,7 @@ export async function configureTunnel(
   if (hostname !== zone.name && !hostname.endsWith(`.${zone.name}`))
     throw new Error("应用域名不属于所选 Zone；未修改任何路由。");
   ctx.ui.log(
-    `目标账号：${account}\n独立 Tunnel：${name}\n应用路由：${hostname} → http://app:3000\n仅处理此项目与环境；保留其他域名与配置。`,
+    `目标账号：${account}\n独立 Tunnel：${name}\n应用路由：${hostname} → ${service}\n应用容器须先在项目私有网络声明 ${name} 别名并监听 3000 端口；仅处理此项目与环境，保留其他域名与配置。`,
   );
   let tunnels;
   try {
@@ -168,7 +170,7 @@ export async function configureTunnel(
   let configuration;
   try {
     configuration = await client.configuration(account, selected.id);
-    mergeTunnelIngress(configuration, hostname, "http://app:3000");
+    mergeTunnelIngress(configuration, hostname, service);
   } catch {
     throw new Error(
       created
@@ -187,14 +189,24 @@ export async function configureTunnel(
   ctx.ui.log(
     `将更新 ${name} 的单条应用域名规则并确保代理 CNAME 指向此 Tunnel；无关 ingress 与配置保留。现有配置不输出，避免泄露敏感内容。`,
   );
-  if (!(await ctx.ui.confirm("确认应用上述 Tunnel 路由与 DNS 配置？"))) return;
+  const replacesLegacyApp = configuration.ingress?.some(
+    (rule) => rule.hostname === hostname && rule.service === "http://app:3000",
+  );
+  if (
+    !(await ctx.ui.confirm(
+      replacesLegacyApp
+        ? `将此域名的旧 http://app:3000 路由改为 ${service}？请先部署并验证 ${name} 网络别名可用，避免现有应用中断；确认后才应用路由与 DNS 配置。`
+        : `确认应用上述 Tunnel 路由与 DNS 配置（${service}）？请先确认应用容器已声明 ${name} 网络别名。`,
+    ))
+  )
+    return;
   try {
     await client.updateIngress(
       account,
       selected.id,
       zone.id,
       hostname,
-      "http://app:3000",
+      service,
       configuration,
     );
     await client.ensureDns(account, zone.id, hostname, selected.id);

@@ -54,14 +54,21 @@ export function tunnelHostname(value: string): string {
   return value;
 }
 export function tunnelService(value: string): string {
-  const match = /^http:\/\/([a-z][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/.exec(
+  const match = /^http:\/\/([a-z0-9][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/.exec(
     value,
   );
+  let normalizedHost: string | undefined;
+  try {
+    normalizedHost = match ? new URL(value).hostname : undefined;
+  } catch {
+    // Invalid ports and ambiguous numeric IP spellings are rejected below.
+  }
   if (
     !match ||
     match[1] === "localhost" ||
     match[1]?.endsWith("-") ||
-    Number(match[2]) > 65535
+    Number(match[2]) > 65535 ||
+    normalizedHost !== match[1]
   )
     throw new Error(
       "本地服务只支持 HTTP 容器服务名及有效端口，例如 http://app:3000。",

@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.7.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.7.2.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -53,7 +53,7 @@ project-setup --root /absolute/project         # 可选，跳过项目选择
 - `components`：分别声明前台、后台、API 和任务服务，关联公开的 Origin、托管项目、分支字段；同一字段通过环境默认值或当前环境配置隔离。后台须单独验证鉴权与默认托管地址绕过风险。
 - `requirements`：声明项目需要的 Storage、受限数据库角色、任务、可选支付/AI/推送、日志、备份恢复等配置和检查说明。只有项目声明的可选能力才展开；没有自动验证器的项目明确显示人工验证，不支持任意命令钩子。
 
-使用内置 AWS 整站 Tunnel 或独立前台/后台/API 模板可快速初始化；AWS 自动路由模板约定容器服务为 `app:3000`，其他服务名或端口应沿用项目流程。`examples/shimau.json` 提供按 shimau 拓扑整理的无凭据示例。模板是配置起点，实际镜像构建、迁移、发布、回滚和业务检查仍由项目已有流程负责。
+使用内置 AWS 整站 Tunnel 或独立前台/后台/API 模板可快速初始化；AWS 自动路由模板使用 `http://${project}-${environment}:3000`（例如 `http://fulcord-staging:3000`）；应用容器须在项目私有网络声明同名网络别名，并监听 3000 端口，连接器须加入该网络。其他端口沿用项目流程。`examples/shimau.json` 提供按 shimau 拓扑整理的无凭据示例。模板是配置起点，实际镜像构建、迁移、发布、回滚和业务检查仍由项目已有流程负责。
 
 Pages 操作支持分别选择前台/后台组件，明确输入真实分支，只读读取部署列表。空项目、所选分支无记录、构建中、失败、已发布和查询未知分别报告；只展示 API 返回并校验过的实际部署 URL。保存为入口需要确认，不自动覆盖自定义域名，不拼接 `staging.<项目>.pages.dev`。状态页保留本次会话的组件检查时间与 API 发布记录；换绑定后失效，重新查询失败不沿用旧成功。API 报告发布成功仍需单独验证域名、Access 和业务功能。
 
@@ -124,7 +124,8 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 0.4 增加「AWS / Zero Trust Tunnel 部署准备」模块。当前自动配置仅支持 manifest 明确声明 `deploymentTopology: "aws-tunnel"` 的整应用同源拓扑；Fulcord 示例已声明。Zoncord 的 Worker + Access + 私有 API 拓扑不能直接套用，未声明或不同拓扑会拒绝修改入口。工具准备配置与检查，业务容器构建、传输、发布与回滚仍由消费项目的部署脚本负责。
 
 - 录入 SSH 别名/`user@host`、项目与环境独立目录、应用与官方 cloudflared 的固定镜像 digest，以及 HTTPS 自定义应用域名。合成文件与清理调度分别配置；开启合成文件必须同时启用独立清理及其凭据。
-- 复用当前 Cloudflare 账号验证活动 Zone；只复用 `${project}-${environment}` 的专用远程 Tunnel。预览并确认后配置到容器网络 `http://app:3000`，保留无关 ingress 和末尾 404；DNS 仅在无记录时新增，冲突不覆盖。列表或权限失败不当作“资源不存在”。
+- 复用当前 Cloudflare 账号验证活动 Zone；只复用 `${project}-${environment}` 的专用远程 Tunnel。从已校验的 Tunnel 名称派生容器网络入口 `http://${project}-${environment}:3000`，预览并确认后配置，保留无关 ingress 和末尾 404；DNS 仅在无记录时新增，冲突不覆盖。列表或权限失败不当作“资源不存在”。
+- 旧项目重新配置前，先部署并验证 `${project}-${environment}` 网络别名，同时保留原服务入口，避免运行中断。工具不会自动改写已有线上 Tunnel；旧 `http://app:3000` 路由会显示旧、新地址并要求明确确认。启动或仅预览不会更新路由。
 - 连接 Token 存入通用保险库；更换 Tunnel 或 Cloudflare 账号会清除旧的项目连接 Token。切换 Supabase 项目同样清除旧清理 Key，并关闭合成文件/清理开关，避免跨项目复用。
 - Wrangler 的 OAuth 不保证具有 DNS 权限。可另配目标账号 Tunnel Edit、目标 Zone Read/DNS Edit 的管理 Token；它保存在独立别名中，保留原 Wrangler 与 CI Token 绑定，不作为容器连接 Token 导出。读取权限通过后仍需在具体写入时核验写权限。
 - SSH 预检只读检查 Docker/Compose、CPU 架构、内存、磁盘和监听端口，严格校验现有主机密钥，不安装软件或绕过 SSH 认证。使用现有 SSH 配置，不将私钥导入工具。

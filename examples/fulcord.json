@@ -94,7 +94,7 @@
         "kind": "web",
         "hosting": "aws",
         "originField": "appOrigin",
-        "instructions": "运行独立AWS Compose app:3000，经专用Tunnel提供同源Cookie/API。合成文件默认关闭。",
+        "instructions": "运行独立AWS Compose fulcord-staging:3000，经专用Tunnel提供同源Cookie/API。合成文件默认关闭。",
         "docs": "docs/CLOUDFLARE.md"
       }
     ],
