@@ -201,6 +201,8 @@ export async function deploymentGuide(
           delete progress.cursor;
           continue;
         }
+        if (result.message)
+          notice = safeMessage(new Error(result.message), ctx);
       } catch (error) {
         if (interrupted(error)) throw error;
         evidence[current.id] = "blocked";
@@ -244,14 +246,22 @@ export async function deploymentGuide(
     ]
       .filter(Boolean)
       .join("\n");
+    const retryable =
+      remoteStages.has(current.id) && !current.missingFields.length;
     const choice = await ctx.ui.select(question, [
+      ...(retryable && current.state === "blocked"
+        ? [{ name: "重新只读核验（不修改配置）", value: "recheck" }]
+        : []),
       {
         name:
           current.id === "acceptance"
             ? "查看项目验收清单"
-            : `继续：${current.title}`,
+            : `${retryable && current.state === "blocked" ? "修改配置" : "继续"}：${current.title}`,
         value: "run",
       },
+      ...(retryable && current.state !== "blocked"
+        ? [{ name: "重新只读核验（不修改配置）", value: "recheck" }]
+        : []),
       ...(current.id === "import"
         ? [{ name: "已有配置，跳过可选导入", value: "skip" }]
         : []),
@@ -261,7 +271,7 @@ export async function deploymentGuide(
       ...(current.id === "tunnel"
         ? [{ name: "修复 Tunnel 管理 Token / 权限", value: "repair-tunnel" }]
         : []),
-      ...(current.id === "pages"
+      ...(["cloudflare", "pages"].includes(current.id)
         ? [
             {
               name: "修复 Cloudflare 账号 / 发布凭据",
@@ -283,6 +293,13 @@ export async function deploymentGuide(
           "发布与基础健康检查已完成；业务验收仍按项目清单执行，未自动标记业务全部通过。",
         );
       return choice === "back" ? "back" : "exit";
+    }
+    if (choice === "recheck") {
+      attempted.delete(current.id);
+      delete evidence[current.id];
+      forced = false;
+      notice = "重新核验当前已保存的绑定；不会重新连接账号或修改资源。";
+      continue;
     }
     if (choice === "overview") {
       const target = await ctx.ui.select(

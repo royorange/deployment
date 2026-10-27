@@ -290,3 +290,19 @@ test("Tunnel probe rejects mismatched route, unproxied DNS, wrong Tunnel name an
     assert.ok(!JSON.stringify(result).includes("synthetic-sensitive-error"));
   }
 });
+
+test("Cloudflare readonly diagnostics distinguish Pages HTTP denial from official credential failure without raw output", async () => {
+  for (const status of [401, 403, 429, 500]) {
+    const { ctx } = fixture();
+    ctx.fetcher = async () =>
+      new Response("synthetic-sensitive-provider-body", { status });
+    await assert.rejects(
+      verifyGuideCloudflare(ctx),
+      (error) =>
+        error instanceof Error &&
+        error.message.includes(`HTTP ${status}`) &&
+        error.message.includes("Pages") &&
+        !error.message.includes("synthetic-sensitive-provider-body"),
+    );
+  }
+});

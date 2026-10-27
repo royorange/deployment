@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { allFields, projectKey, validateField } from "./config.ts";
 import {
   checkSshHost,
@@ -8,6 +7,11 @@ import {
 import { readPrivate, singleLine, writePrivate } from "./files.ts";
 import { localExportPath } from "./process.ts";
 import { ApiError } from "./providers.ts";
+import {
+  tunnelConfigurationMatches,
+  tunnelReadFailure,
+  type TunnelReadStage,
+} from "./tunnel-readback.ts";
 import {
   CloudflareTunnels,
   mergeTunnelIngress,
@@ -143,6 +147,7 @@ export async function verifyGuideTunnelConfiguration(
     !/^[A-Za-z0-9_+/=.-]+$/.test(values.cloudflareTunnelToken)
   )
     return incomplete;
+  let stage: TunnelReadStage = "Zone 归属";
   try {
     const account = validateField(
       ctx.config,
@@ -166,26 +171,30 @@ export async function verifyGuideTunnelConfiguration(
     const service = tunnelService(`http://${name}:3000`);
     const zone = await client.zone(account, zoneId);
     if (hostname !== zone.name && !hostname.endsWith(`.${zone.name}`))
-      return incomplete;
+      throw new Error("zone-mismatch");
+    stage = "Tunnel 身份";
     const tunnels = await client.tunnels(account);
     const matches = tunnels.filter((item) => item.name === name);
-    if (matches.length !== 1 || matches[0]!.id !== tunnelId) return incomplete;
+    if (matches.length !== 1 || matches[0]!.id !== tunnelId)
+      throw new Error("tunnel-mismatch");
+    stage = "路由配置";
     const configuration = await client.configuration(account, tunnelId);
     if (
-      !isDeepStrictEqual(
+      !tunnelConfigurationMatches(
         configuration,
         mergeTunnelIngress(configuration, hostname, service),
       )
     )
-      return incomplete;
+      throw new Error("configuration-mismatch");
+    stage = "DNS";
     const dns = await client.dnsRecords(account, zoneId, hostname);
-    if (dns.length !== 1 || dnsConflict(dns, tunnelId)) return incomplete;
+    if (dns.length !== 1 || dnsConflict(dns, tunnelId))
+      throw new Error("dns-mismatch");
     return { status: "verified" };
-  } catch {
+  } catch (error) {
     return {
       status: "configured",
-      message:
-        "Tunnel 专用绑定、路由或代理 CNAME 未通过本次只读核验；请重新配置或检查读取权限。未修改资源，连接器与公网健康仍待发布验证。",
+      message: `${tunnelReadFailure(stage, error)} 未修改资源，连接器与公网健康仍待发布验证。`,
     };
   }
 }
@@ -362,20 +371,22 @@ export async function configureTunnel(
       ? "Tunnel 连接 Token 已保存到加密保险库，值不显示。"
       : "Tunnel 连接 Token 已载入本次内存，值不显示。",
   );
+  let readStage: TunnelReadStage = "路由配置";
   try {
     const latest = await client.configuration(account, selected.id);
     const expected = mergeTunnelIngress(configuration, hostname, service);
+    if (!tunnelConfigurationMatches(latest, expected))
+      throw new Error("configuration-mismatch");
+    readStage = "DNS";
     const dns = await client.dnsRecords(account, zone.id, hostname);
     if (
-      !isDeepStrictEqual(latest, expected) ||
       dns.length !== 1 ||
       dnsConflict(dns, selected.id) ||
       !values.cloudflareTunnelToken?.trim()
     )
       throw new Error("verification-mismatch");
-  } catch {
-    const message =
-      "已记录 Tunnel 配置与连接 Token，但远端路由或代理 CNAME 尚未核验一致；请重新检查，不能视为部署就绪。连接器、应用及公网健康仍待部署验证。";
+  } catch (error) {
+    const message = `已记录 Tunnel 配置与连接 Token；${tunnelReadFailure(readStage, error)} 不能视为部署就绪；连接器、应用及公网健康仍待部署验证。`;
     ctx.ui.log(message);
     return { status: "configured", message };
   }

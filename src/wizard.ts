@@ -474,8 +474,22 @@ export async function verifyGuideCloudflare(
       message:
         "请先绑定 Cloudflare 账号并载入相应登录凭据、选择 Pages 项目；未读取其他来源凭据。",
     };
+  let client: Cloudflare;
   try {
-    const client = await cloudflareClient(ctx);
+    client = await cloudflareClient(ctx);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    // Provider failures can contain credentials; retain only static diagnostic context.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      "Cloudflare 凭据读取或身份、账号归属核验失败；请先重新只读核验。若持续失败，再修复已绑定的官方 Wrangler 登录或账号 Token。未读取其他来源凭据，未修改资源。",
+    );
+  }
+  try {
     const project = await client.pagesProject(
       configured.cloudflareAccountId,
       configured.pagesProject,
@@ -488,9 +502,20 @@ export async function verifyGuideCloudflare(
     if (project.name !== configured.pagesProject)
       throw new Error("resource-mismatch");
     return { status: "verified" };
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    const detail =
+      error instanceof ApiError
+        ? `Pages 读取失败（HTTP ${error.status}）；${error.status === 401 ? "凭据已失效，请检查当前绑定的登录。" : error.status === 403 ? "请检查目标账号和 Pages 项目的读取权限与资源范围。" : error.status === 429 ? "请求受限，请稍后重新只读核验。" : "请稍后重试或检查服务状态。"}`
+        : "Pages 读取或响应校验失败；请重新只读核验，并检查网络、代理与项目绑定。";
+    // Do not attach a raw provider cause that could contain credentials or response data.
+    // eslint-disable-next-line preserve-caught-error
     throw new Error(
-      "Cloudflare 当前登录或 Pages 项目未通过只读核验；请检查登录是否过期、账号归属和项目权限，再重新连接。未创建或更改资源。",
+      `Cloudflare ${detail} 未创建或更改资源，不需要因此重新创建 Tunnel。`,
     );
   }
 }

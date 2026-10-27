@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.8.1.tgz
+npm install -g .artifacts/royorange-project-setup-0.8.2.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -181,3 +181,9 @@ corepack pnpm test:package
 新建或已记录但未初始化的远程 Tunnel，只有 API 明确成功返回 `config: null` 且没有正版本，并再次核验账号、ID、远程管理与未删除状态后，才提供初始化路由的预览和确认。写入前重新比较配置快照与版本；已有配置保留原规则。HTTP 403/404、缺失字段或无法识别的响应不会被当作空配置。Cloudflare 公开 API 没有原子条件写入机制，写前核对不能消除全部并发窗口；操作期间避免在控制台同时编辑同一个 Tunnel。
 
 配置读取失败会显示静态 HTTP 状态和对应修复建议，不显示响应正文或凭据。已保存的 Tunnel ID 不会被删除或重复新建；失败留在 Tunnel 阶段，可直接选择“修复 Tunnel 管理 Token / 权限”，无需再寻找服务子菜单。
+
+### 只读核验与默认字段回读（0.8.2）
+
+账号、Tunnel、Auth 这些远端阶段提供“重新只读核验（不修改配置）”，失败后可先重试原绑定，无需进入重连流程。Cloudflare 诊断区分凭据/身份读取与 Pages HTTP 请求；本地配置尚缺时保留具体下一步提示。错误不输出原始服务响应或凭据。
+
+Tunnel 写后回读仅归一化服务端可补充的空 `originRequest`（全局/规则）和明确关闭且没有其他选项的 `warp-routing`。目标服务、其他路由、TLS/安全选项、规则顺序和其余配置仍完整比较；不会因字段少或出错就跳过核验。通过此检查只代表路由/DNS 配置一致，连接器与应用健康仍须发布后验证。

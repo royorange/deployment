@@ -30,3 +30,5 @@ The optional human configuration entrypoint is `.project-setup/{environment}/.en
 阶段依赖摘要由 `deployment-guide-bindings.ts` 在内存计算，只包含公开字段和凭据存在性，不保存 secret 内容或其摘要。整体目标绑定仍作用于磁盘历史；同次会话仅失效依赖变化的阶段。失败路径先同步目标绑定再保存 cursor，避免部分远端创建成功后重开丢失位置。
 
 Tunnel 初始化采用显式空配置快照；HTTP 错误、缺失 `config` 或已有正版本但无配置均拒绝初始化。写前核验远程 Tunnel 归属、Zone、完整快照与版本；此检查不是服务端原子 CAS。原严格配置读取用于现有路由，初始化须单独确认，错误只输出受控状态和操作建议。
+
+`tunnel-readback.ts` 仅对空 originRequest 和精确的 disabled warp-routing 做等价归一化后深比较；其余全部配置保留在比较范围。写后与只读核验使用相同语义，受控诊断保留失败阶段与 HTTP 状态，不附带原始异常。远端阶段可只读重试现有绑定；明确修改配置才进入原账号/资源操作，不自动重连或改用其他 Token。
