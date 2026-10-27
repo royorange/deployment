@@ -452,8 +452,7 @@ test("wizard scoped migration never calls profile and blocks changed organizatio
   };
   ctx.ui.input = async (message, options) => {
     if (options?.secret) return "fixture-db-password";
-    assert.match(message, /完整输入目标/);
-    return ref;
+    assert.fail(`unexpected text confirmation: ${message}`);
   };
   ctx.fetcher = async (url) => {
     assert.equal(new URL(String(url)).pathname, `/v1/projects/${ref}`);

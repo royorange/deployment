@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.9.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.9.1.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -121,7 +121,7 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 
 只有 manifest 明确声明 `migrationStrategy: "supabase-cli"` 才能使用官方迁移入口；`project-managed` 或未声明时，在安装 CLI、读取密码与连接数据库前拒绝。Fulcord 示例声明官方 CLI，Zoncord 示例声明项目自管。此门禁不代表已探测远端历史，不能自动证明账本兼容。
 
-数据库迁移使用冻结的 SQL 快照、显式 Ref、官方迁移历史与 `db push --dry-run`。应用前须审阅 SQL 并完整输入目标 Ref；API 资源范围或官方 profile 身份会在相关步骤重新核验。数据库密码仅通过子进程环境传递。scope PAT 权限不等于数据库密码权限，不能把它当成数据库操作的完整限制。工具不自动 reset/repair，不推送 seed/Vault 设置。
+数据库迁移使用冻结的 SQL 快照、显式 Ref、官方迁移历史与 `db push --dry-run`。预演后展示项目、环境、目标 Ref 和待执行文件；审阅 SQL 后，非生产环境用一次默认 No 的确认实际应用，生产环境需输入可读的 `项目名/production`，不再手抄 Ref。确认期间目标或账号绑定变化会拒绝继续；API 资源范围或官方 profile 身份仍会在相关步骤重新核验。取消、确认不匹配或错误会阻止后续应用发布。数据库密码仅通过子进程环境传递。scope PAT 权限不等于数据库密码权限，不能把它当成数据库操作的完整限制。工具不自动 reset/repair，不推送 seed/Vault 设置。
 
 ## AWS 与 Cloudflare Tunnel 部署准备
 

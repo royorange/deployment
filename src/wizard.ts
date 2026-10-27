@@ -1408,6 +1408,33 @@ async function migrations(
 ): Promise<MigrationReleaseResult | undefined> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
+  const target = `${ctx.config.project}/${ctx.env}`;
+  const production = ctx.env === "production";
+  const binding = () =>
+    JSON.stringify([
+      ctx.root,
+      ctx.config.project,
+      ctx.env,
+      ctx.config.migrationStrategy,
+      ...[
+        "supabaseProjectRef",
+        "supabaseUrl",
+        "@supabaseSource",
+        "@supabaseProfile",
+        "@supabaseIdentity",
+        "@supabaseIdentityMode",
+        "@supabaseOrganization",
+        "@supabase",
+      ].map((key) => values(ctx)[key]),
+      activeCredential(ctx, "supabase"),
+    ]);
+  const initialBinding = binding();
+  const assertTarget = () => {
+    if (binding() !== initialBinding)
+      throw new Error(
+        "迁移目标或账号绑定已变化；请重新预演并确认，未继续应用。",
+      );
+  };
   if (ctx.config.migrationStrategy !== "supabase-cli")
     throw new Error(
       ctx.config.migrationStrategy === "project-managed"
@@ -1430,13 +1457,15 @@ async function migrations(
     !official && values(ctx)["@supabaseIdentityMode"] === "resource"
       ? values(ctx)["@supabaseOrganization"]
       : undefined;
-  const verifyResource = resourceOrganization
-    ? async () => {
-        const project = await new Supabase(token!, ctx.fetcher).project(ref);
-        if (project.organization_id !== resourceOrganization)
-          throw new Error("迁移目标项目组织与绑定不同；未执行数据库操作。");
-      }
-    : undefined;
+  const verifyResource = async () => {
+    assertTarget();
+    if (resourceOrganization) {
+      const project = await new Supabase(token!, ctx.fetcher).project(ref);
+      if (project.organization_id !== resourceOrganization)
+        throw new Error("迁移目标项目组织与绑定不同；未执行数据库操作。");
+    }
+    assertTarget();
+  };
   const password = await ctx.ui.input(
     "数据库密码（仅本次内存使用，不保存、不导出）",
     { secret: true },
@@ -1446,10 +1475,12 @@ async function migrations(
     return;
   }
   if (/[\r\n\x00]/.test(password)) throw new Error("数据库密码格式无效。");
+  assertTarget();
   ctx.ui.log(
-    `目标：${ctx.config.project}/${ctx.env} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
+    `目标：${target} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
   );
   if (!(await ctx.ui.confirm("确认目标项目并执行数据库迁移预演？"))) return;
+  assertTarget();
   const session = await migrationSession(
     ctx.root,
     ref,
@@ -1472,6 +1503,7 @@ async function migrations(
         : `已冻结本地迁移快照：${session.files.join(", ")}`,
     );
     const pending = await session.preview();
+    assertTarget();
     ctx.ui.log(
       `CLI 预演成功，输出识别到的待执行文件：${pending.join(", ") || "无（未识别到文件名时请用官方 CLI 核对历史）"}。请审阅本地 SQL；工具不会自动判断其破坏性。`,
     );
@@ -1487,12 +1519,16 @@ async function migrations(
       ctx.ui.log("没有可审阅的待执行文件清单，本次不应用迁移。");
       return;
     }
-    if (ctx.env === "production")
+    ctx.ui.log(`迁移应用目标：${target}；Project Ref：${ref}。`);
+    if (production)
       ctx.ui.log("当前为 production；下面的确认会实际修改生产数据库。");
-    const answer = await ctx.ui.input(
-      `如需应用迁移，完整输入目标 Project Ref ${ref}；直接回车只保留预演`,
-    );
-    if (answer !== ref) {
+    const confirmed = production
+      ? (await ctx.ui.input(
+          `如需实际应用迁移，输入 ${target}；直接回车只保留预演`,
+        )) === target
+      : await ctx.ui.confirm(`实际应用以上迁移到 ${target} 的数据库？`);
+    assertTarget();
+    if (!confirmed) {
       ctx.ui.log("未执行迁移。");
       return;
     }

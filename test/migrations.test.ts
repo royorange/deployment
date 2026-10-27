@@ -278,7 +278,9 @@ async function releaseFixture() {
   const calls: string[][] = [];
   const logs: string[] = [];
   const identity = "11111111-1111-4111-8111-111111111111";
-  const inputs = ["fixture-db-password", releaseRef];
+  const inputs = ["fixture-db-password"];
+  const prompts: string[] = [];
+  const confirmations: string[] = [];
   let outputs = [releaseFile, "Remote database is up to date."];
   const ctx: Context = {
     root,
@@ -303,8 +305,14 @@ async function releaseFixture() {
     },
     save: async () => {},
     ui: {
-      input: async () => inputs.shift() ?? "",
-      confirm: async () => true,
+      input: async (message) => {
+        prompts.push(message);
+        return inputs.shift() ?? "";
+      },
+      confirm: async (message) => {
+        confirmations.push(message);
+        return true;
+      },
       select: async () => "",
       check: async () => [],
       log: (s) => logs.push(s),
@@ -328,20 +336,23 @@ async function releaseFixture() {
     calls,
     logs,
     inputs,
+    prompts,
+    confirmations,
     setOutputs: (next: string[]) => {
       outputs = next;
     },
     close: () => rm(root, { recursive: true, force: true }),
   };
 }
-test("release migrations returns cancellation for installer, empty password, preview and ref refusal", async () => {
-  for (const stop of ["install", "password", "preview", "ref"]) {
+test("release migrations returns cancellation for installer, empty password, preview and apply refusal", async () => {
+  for (const stop of ["install", "password", "preview", "apply"]) {
     const f = await releaseFixture();
     try {
       if (stop === "install") f.ctx.ensureSupabaseCli = async () => false;
       if (stop === "password") f.inputs[0] = "";
       if (stop === "preview") f.ctx.ui.confirm = async () => false;
-      if (stop === "ref") f.inputs[1] = "wrong-ref";
+      if (stop === "apply")
+        f.ctx.ui.confirm = async (message) => !message.includes("实际应用");
       assert.equal(await releaseMigrations(f.ctx), undefined);
       assert.equal(
         f.calls.filter(
@@ -354,7 +365,7 @@ test("release migrations returns cancellation for installer, empty password, pre
     }
   }
 });
-test("release migrations accepts confirmed up-to-date evidence without writes or typed apply ref", async () => {
+test("release migrations accepts confirmed up-to-date evidence without writes or apply confirmation", async () => {
   const f = await releaseFixture();
   try {
     f.setOutputs(["Linked project is up to date."]);
@@ -363,7 +374,8 @@ test("release migrations accepts confirmed up-to-date evidence without writes or
       ref: releaseRef,
       files: [],
     });
-    assert.equal(f.inputs.length, 1);
+    assert.equal(f.inputs.length, 0);
+    assert.equal(f.confirmations.length, 1);
     assert.equal(f.calls.filter((args) => args[0] === "db").length, 1);
   } finally {
     await f.close();
@@ -391,6 +403,10 @@ test("release migrations applies reviewed snapshot then verifies up-to-date befo
       ref: releaseRef,
       files: [releaseFile],
     });
+    assert.equal(f.prompts.length, 1);
+    assert.equal(f.confirmations.length, 2);
+    assert.match(f.confirmations[1]!, /实际应用.*fixture\/staging/);
+    assert.ok(f.logs.some((message) => message.includes(releaseRef)));
     const pushes = f.calls.filter((args) => args[0] === "db");
     assert.equal(pushes.length, 3);
     assert.ok(pushes[0]!.includes("--dry-run"));
@@ -446,6 +462,132 @@ test("release migration post-apply uncertainty blocks application without databa
     } finally {
       await f.close();
     }
+  }
+});
+test("nonproduction migrations use a single boolean apply confirmation without typing the Ref", async () => {
+  const f = await releaseFixture();
+  try {
+    f.ctx.env = "development";
+    f.ctx.data.profiles[projectKey("fixture", "development")] =
+      f.ctx.data.profiles[projectKey("fixture", "staging")]!;
+    assert.equal((await releaseMigrations(f.ctx))?.state, "applied");
+    assert.equal(f.prompts.length, 1);
+    assert.equal(f.confirmations.length, 2);
+    assert.match(f.confirmations[1]!, /fixture\/development/);
+  } finally {
+    await f.close();
+  }
+});
+test("production migrations require the readable project/environment rather than a typed Ref", async () => {
+  for (const answer of [
+    "fixture/production",
+    "wrong/production",
+    releaseRef,
+    "",
+  ]) {
+    const f = await releaseFixture();
+    try {
+      f.ctx.env = "production";
+      f.ctx.data.profiles[projectKey("fixture", "production")] =
+        f.ctx.data.profiles[projectKey("fixture", "staging")]!;
+      f.inputs.push(answer);
+      const result = await releaseMigrations(f.ctx);
+      assert.equal(
+        result?.state,
+        answer === "fixture/production" ? "applied" : undefined,
+      );
+      assert.equal(f.confirmations.length, 1);
+      assert.match(f.prompts[1]!, /fixture\/production/);
+      assert.ok(!f.prompts[1]!.includes(releaseRef));
+      assert.equal(
+        f.calls.filter(
+          (args) => args[0] === "db" && !args.includes("--dry-run"),
+        ).length,
+        answer === "fixture/production" ? 1 : 0,
+      );
+    } finally {
+      await f.close();
+    }
+  }
+});
+test("migration apply confirmation cannot authorize a changed project, environment or binding", async () => {
+  for (const change of [
+    "ref",
+    "environment",
+    "project",
+    "profile",
+    "identity",
+    "root",
+  ] as const) {
+    const f = await releaseFixture();
+    try {
+      const confirm = f.ctx.ui.confirm;
+      f.ctx.ui.confirm = async (message) => {
+        if (message.includes("实际应用")) {
+          const profile =
+            f.ctx.data.profiles[projectKey("fixture", "staging")]!;
+          if (change === "ref") profile.supabaseProjectRef = "b".repeat(20);
+          if (change === "environment") f.ctx.env = "production";
+          if (change === "project")
+            f.ctx.config = { ...f.ctx.config, project: "other" };
+          if (change === "profile") profile["@supabaseProfile"] = "other";
+          if (change === "identity") profile["@supabaseIdentity"] = "other";
+          if (change === "root") f.ctx.root = join(f.ctx.root, "other");
+        }
+        return confirm(message);
+      };
+      await assert.rejects(releaseMigrations(f.ctx), /目标.*变化|绑定.*变化/);
+      assert.equal(
+        f.calls.filter(
+          (args) => args[0] === "db" && !args.includes("--dry-run"),
+        ).length,
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  }
+});
+test("production confirmation cannot authorize a target changed while typing the readable name", async () => {
+  const f = await releaseFixture();
+  try {
+    f.ctx.env = "production";
+    const profile = f.ctx.data.profiles[projectKey("fixture", "staging")]!;
+    f.ctx.data.profiles[projectKey("fixture", "production")] = profile;
+    f.ctx.ui.input = async (_message, options) => {
+      if (options?.secret) return "fixture-db-password";
+      profile.supabaseProjectRef = "b".repeat(20);
+      return "fixture/production";
+    };
+    await assert.rejects(releaseMigrations(f.ctx), /目标.*变化|绑定.*变化/);
+    assert.equal(
+      f.calls.filter((args) => args[0] === "db" && !args.includes("--dry-run"))
+        .length,
+      0,
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("cancelling the apply confirmation stops publication without a database write", async () => {
+  const f = await releaseFixture();
+  try {
+    f.ctx.ui.confirm = async (message) => {
+      if (message.includes("实际应用")) {
+        const error = new Error("cancelled");
+        error.name = "AbortPromptError";
+        throw error;
+      }
+      return true;
+    };
+    assert.equal(await releaseMigrations(f.ctx), undefined);
+    assert.equal(
+      f.calls.filter((args) => args[0] === "db" && !args.includes("--dry-run"))
+        .length,
+      0,
+    );
+  } finally {
+    await f.close();
   }
 });
 test("release prompt cancellation is distinct from migration failure", async () => {
