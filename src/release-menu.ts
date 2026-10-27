@@ -1,3 +1,5 @@
+import { lifecycleMenu } from "./lifecycle-menu.ts";
+import { lifecycleAvailable } from "./lifecycle-engine.ts";
 import { deviceMenu } from "./device-menu.ts";
 import { readReleaseCi } from "./release-ci.ts";
 import { openReleaseDevices, runReleaseFlow } from "./release-flow.ts";
@@ -11,6 +13,9 @@ export async function releaseMenu(ctx: Context): Promise<void> {
       `${ctx.config.project} / ${ctx.env} — 部署与发布`,
       [
         { name: "部署应用 / API / Pages", value: "deploy" },
+        ...(lifecycleAvailable(ctx)
+          ? [{ name: "运行状态 / 停止 / 恢复 / 回退", value: "lifecycle" }]
+          : []),
         { name: "创建或配置 Tunnel / DNS / 连接 Token", value: "tunnel" },
         { name: "导入/导出统一 .env（可选）", value: "export" },
         { name: "部署主机（保存 IP、用户名、端口）", value: "devices" },
@@ -20,6 +25,10 @@ export async function releaseMenu(ctx: Context): Promise<void> {
     );
     if (selected === "back") return;
     try {
+      if (selected === "lifecycle") {
+        await lifecycleMenu(ctx, { store });
+        continue;
+      }
       if (selected === "devices") {
         await deviceMenu({ ui: ctx.ui, store, runner: ctx.runner });
         continue;

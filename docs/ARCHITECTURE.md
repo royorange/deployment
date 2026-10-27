@@ -32,3 +32,9 @@ The optional human configuration entrypoint is `.project-setup/{environment}/.en
 Tunnel 初始化采用显式空配置快照；HTTP 错误、缺失 `config` 或已有正版本但无配置均拒绝初始化。写前核验远程 Tunnel 归属、Zone、完整快照与版本；此检查不是服务端原子 CAS。原严格配置读取用于现有路由，初始化须单独确认，错误只输出受控状态和操作建议。
 
 `tunnel-readback.ts` 仅对空 originRequest 和精确的 disabled warp-routing 做等价归一化后深比较；其余全部配置保留在比较范围。写后与只读核验使用相同语义，受控诊断保留失败阶段与 HTTP 状态，不附带原始异常。远端阶段可只读重试现有绑定；明确修改配置才进入原账号/资源操作，不自动重连或改用其他 Token。
+
+## 运行生命周期
+
+`lifecycle-protocol.ts` 验证独立的 inspect/apply 协议；`lifecycle-engine.ts` 冻结受信适配器、公开目标、设备和控制提交。状态检查不要求 CI、不写远端资源；变更在 CI 通过后使用与发布共享的作用域锁，预览、确认并以远端快照令牌调用 apply，随后重新检查目标状态。`lifecycle-menu.ts` 在部署菜单内提供按需刷新、停止、恢复和兼容版本回退，外层仍为六项。
+
+`lifecycle-audit.ts` 只记录公开的操作、版本、设备和结果。请求不接收 runtimeValues 或管理凭据，不调用迁移。状态为 unknown/busy 时阻止变更；读取错误不能被当作未部署。项目适配器负责远端锁、容器归属、资源约束、兼容性及恢复日志；工具不会猜测旧版本安全性，也不自动降级数据库。

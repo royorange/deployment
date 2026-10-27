@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.8.2.tgz
+npm install -g .artifacts/royorange-project-setup-0.9.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -187,3 +187,22 @@ corepack pnpm test:package
 账号、Tunnel、Auth 这些远端阶段提供“重新只读核验（不修改配置）”，失败后可先重试原绑定，无需进入重连流程。Cloudflare 诊断区分凭据/身份读取与 Pages HTTP 请求；本地配置尚缺时保留具体下一步提示。错误不输出原始服务响应或凭据。
 
 Tunnel 写后回读仅归一化服务端可补充的空 `originRequest`（全局/规则）和明确关闭且没有其他选项的 `warp-routing`。目标服务、其他路由、TLS/安全选项、规则顺序和其余配置仍完整比较；不会因字段少或出错就跳过核验。通过此检查只代表路由/DNS 配置一致，连接器与应用健康仍须发布后验证。
+
+### 运行状态、停止、恢复与回退（0.9.0）
+
+进入“部署与发布 → 运行状态 / 停止 / 恢复 / 回退”。项目声明独立的 `release.lifecycle` 适配器和适用环境后才显示此入口；只使用已登记的 SSH 设备。首次执行前核对受信仓库适配器，控制代码须来自干净、匹配来源的已跟踪提交。
+
+状态页按需刷新当前版本、容器状态、资源用量、健康与近期操作历史；不创建后台监控或告警。停止、恢复和回退均先只读预览，再确认；执行前重新核验精确提交的 CI 和远端状态，目标变化或并发操作会阻止继续。生命周期请求只传公开绑定，不传管理 Token、数据库密码或应用 Key；适配器使用主机已有运行文件。
+
+```json
+{
+  "release": {
+    "lifecycle": {
+      "adapter": "deploy/lifecycle.mts",
+      "environments": ["staging"]
+    }
+  }
+}
+```
+
+具体容器隔离、恢复核验和兼容规则由项目适配器实现。Fulcord 的停止保留数据库、云资源和磁盘文件；恢复只启动已存在版本；回退只允许迁移集及资源绑定匹配的已成功版本，不回滚数据库。共享主机仍共享 CPU、内存与磁盘，资源限制不能替代独立主机隔离。

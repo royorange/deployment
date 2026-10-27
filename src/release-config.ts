@@ -15,6 +15,7 @@ export type ReleaseConfig = {
   environments: string[];
   publicFields?: string[];
   components: ReleaseComponent[];
+  lifecycle?: { adapter: string; environments: string[] };
 };
 function keys(
   input: unknown,
@@ -48,6 +49,7 @@ export function validateRelease(
     "environments",
     "publicFields",
     "components",
+    "lifecycle",
   ]);
   if (
     !config.repository ||
@@ -82,6 +84,28 @@ export function validateRelease(
     release.environments.some((env) => !config.environments.includes(env))
   )
     throw new Error("发布环境必须为项目已声明的环境。");
+  if (release.lifecycle !== undefined) {
+    keys(release.lifecycle, ["adapter", "environments"]);
+    const lifecycle = release.lifecycle;
+    if (
+      typeof lifecycle.adapter !== "string" ||
+      lifecycle.adapter.length > 200 ||
+      !/^deploy\/[A-Za-z0-9][A-Za-z0-9_./-]*\.(mts|mjs)$/.test(
+        lifecycle.adapter,
+      ) ||
+      lifecycle.adapter
+        .split("/")
+        .some((part) => ["..", ".", ""].includes(part)) ||
+      !Array.isArray(lifecycle.environments) ||
+      !lifecycle.environments.length ||
+      lifecycle.environments.length > 10 ||
+      new Set(lifecycle.environments).size !== lifecycle.environments.length ||
+      lifecycle.environments.some(
+        (env) => typeof env !== "string" || !release.environments.includes(env),
+      )
+    )
+      throw new Error("生命周期声明必须为项目内适配器和发布环境的子集。");
+  }
   if (
     release.publicFields !== undefined &&
     (!Array.isArray(release.publicFields) ||

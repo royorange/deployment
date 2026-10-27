@@ -5,6 +5,7 @@ import { allFields, validateField } from "./config.ts";
 import { validateDevice, type Device } from "./devices.ts";
 import { noSymlinks, writePrivate } from "./files.ts";
 import { assertReleaseCi } from "./release-ci.ts";
+import { activeReleaseScopes } from "./release-lock.ts";
 import { releaseRuntimeValues } from "./release-runtime.ts";
 import {
   adapterOutput,
@@ -44,7 +45,7 @@ type Dependencies = {
   ) => Promise<MigrationResult | undefined>;
   cloudflareToken?: (ctx: Context) => Promise<string>;
 };
-const running = new Set<string>();
+const running = activeReleaseScopes;
 export async function runRelease(
   ctx: Context,
   componentId: string,

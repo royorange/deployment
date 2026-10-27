@@ -3,7 +3,10 @@ import { resolve, relative, isAbsolute } from "node:path";
 import { noSymlinks } from "./files.ts";
 import type { Context } from "./wizard.ts";
 
-export async function releaseCheckout(ctx: Context): Promise<string> {
+export async function releaseCheckout(
+  ctx: Context,
+  adapter = ctx.config.release!.adapter,
+): Promise<string> {
   const git = (args: string[]) =>
     ctx.runner("git", ["--no-replace-objects", ...args], { cwd: ctx.root });
   const sha = (await git(["rev-parse", "HEAD"])).trim();
@@ -30,7 +33,6 @@ export async function releaseCheckout(ctx: Context): Promise<string> {
     match[1]!.toLowerCase() !== ctx.config.repository?.toLowerCase()
   )
     throw new Error("本地origin与声明的GitHub仓库不一致。");
-  const adapter = ctx.config.release!.adapter;
   await noSymlinks(resolve(ctx.root, adapter));
   const root = await realpath(ctx.root),
     path = await realpath(resolve(root, adapter));
