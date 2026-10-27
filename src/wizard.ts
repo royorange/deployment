@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   allFields,
   name as resourceName,
@@ -60,6 +61,8 @@ type Runtime = {
   statuses: Record<string, LoginStatus>;
   officialCloudflareToken?: string;
   transientSupabaseToken?: string;
+  transientSupabaseDatabasePassword?: string;
+  supabaseDatabasePassword?: { scope: string; password: string };
   pagesEvidence?: Record<string, PagesEvidence[]>;
   githubEnvironment?: Record<
     string,
@@ -143,11 +146,29 @@ export function values(ctx: Context): Values {
   const key = projectKey(ctx.config.project, ctx.env);
   return (ctx.data.profiles[key] ??= { ...ctx.config.defaults?.[ctx.env] });
 }
+function secretForms(value: string): string[] {
+  const json = JSON.stringify(value).slice(1, -1);
+  const forms = [value, json, json.replaceAll("/", "\\/")];
+  const url = new URL("https://example.invalid");
+  url.password = value;
+  forms.push(url.password);
+  try {
+    forms.push(encodeURIComponent(value), encodeURI(value));
+  } catch {
+    // Lone UTF-16 surrogates have no URI encoding; raw and JSON forms still apply.
+  }
+  return forms.flatMap((form) => [
+    form,
+    form.replace(/%[A-F0-9]{2}/g, (part) => part.toLowerCase()),
+  ]);
+}
 export function safeMessage(error: unknown, ctx?: Context): string {
   let message = error instanceof Error ? error.message : "操作失败。";
   const secrets = [
     ctx?.runtime?.officialCloudflareToken,
     ctx?.runtime?.transientSupabaseToken,
+    ctx?.runtime?.transientSupabaseDatabasePassword,
+    ctx?.runtime?.supabaseDatabasePassword?.password,
     ...Object.values(ctx?.data.credentials ?? {}),
     ...Object.values(ctx?.data.profiles ?? {}).flatMap((profile) =>
       Object.entries(profile)
@@ -155,8 +176,13 @@ export function safeMessage(error: unknown, ctx?: Context): string {
         .map(([, value]) => value),
     ),
   ];
-  for (const value of secrets)
-    if (value) message = message.split(value).join("[已隐藏]");
+  const forms = new Set(
+    secrets.flatMap((value) => (value ? secretForms(value) : [])),
+  );
+  for (const form of [...forms]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length))
+    message = message.split(form).join("[已隐藏]");
   return message.replace(/[\x00-\x1f\x7f\x9b]/g, " ").slice(0, 1000);
 }
 function display(value: string): string {
@@ -1285,6 +1311,7 @@ async function selectSupabase(ctx: Context): Promise<void> {
     "supabasePublishableKey",
     key,
   );
+  delete runtime(ctx).supabaseDatabasePassword;
   status(ctx, "supabase", {
     state: "已验证",
     source:
@@ -1406,6 +1433,29 @@ async function migrations(
   release = false,
   expectedCommit?: string,
 ): Promise<MigrationReleaseResult | undefined> {
+  try {
+    return await migrationAttempt(ctx, release, expectedCommit);
+  } catch (error) {
+    // Redact both the current candidate and the verified password before clearing them.
+    const message = safeMessage(error, ctx);
+    delete runtime(ctx).supabaseDatabasePassword;
+    // Raw CLI/provider causes may contain database credentials.
+    const sanitized = new Error(message);
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      sanitized.name = error.name;
+    throw sanitized;
+  } finally {
+    delete runtime(ctx).transientSupabaseDatabasePassword;
+  }
+}
+async function migrationAttempt(
+  ctx: Context,
+  release = false,
+  expectedCommit?: string,
+): Promise<MigrationReleaseResult | undefined> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
   const target = `${ctx.config.project}/${ctx.env}`;
@@ -1429,6 +1479,9 @@ async function migrations(
       activeCredential(ctx, "supabase"),
     ]);
   const initialBinding = binding();
+  const scope = createHash("sha256").update(initialBinding).digest("hex");
+  if (runtime(ctx).supabaseDatabasePassword?.scope !== scope)
+    delete runtime(ctx).supabaseDatabasePassword;
   const assertTarget = () => {
     if (binding() !== initialBinding)
       throw new Error(
@@ -1442,6 +1495,7 @@ async function migrations(
         : "项目映射尚未明确 migrationStrategy；请先按项目既有账本声明策略，再运行迁移。未安装 CLI 或连接数据库。",
     );
   if (ctx.ensureSupabaseCli && !(await ctx.ensureSupabaseCli())) {
+    delete runtime(ctx).supabaseDatabasePassword;
     ctx.ui.log("已取消迁移，未请求数据库密码或连接数据库。");
     return;
   }
@@ -1466,10 +1520,17 @@ async function migrations(
     }
     assertTarget();
   };
-  const password = await ctx.ui.input(
-    "数据库密码（仅本次内存使用，不保存、不导出）",
-    { secret: true },
-  );
+  const cached = runtime(ctx).supabaseDatabasePassword;
+  const password =
+    cached?.password ??
+    (await ctx.ui.input("数据库密码（验证后仅本次进程复用，不保存、不导出）", {
+      secret: true,
+    }));
+  runtime(ctx).transientSupabaseDatabasePassword = password;
+  if (cached)
+    ctx.ui.log(
+      "复用本次进程已验证的数据库密码；仍将重新核对目标身份和迁移账本。",
+    );
   if (!password) {
     ctx.ui.log("已取消迁移，未连接数据库。");
     return;
@@ -1479,8 +1540,10 @@ async function migrations(
   ctx.ui.log(
     `目标：${target} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
   );
-  if (!(await ctx.ui.confirm("确认目标项目并执行数据库迁移预演？"))) return;
+  if (!release && !(await ctx.ui.confirm("确认目标项目并执行数据库迁移预演？")))
+    return;
   assertTarget();
+  ctx.ui.log("正在只读核对官方 CLI 迁移账本；不会自动应用 SQL。");
   const session = await migrationSession(
     ctx.root,
     ref,
@@ -1504,6 +1567,9 @@ async function migrations(
     );
     const pending = await session.preview();
     assertTarget();
+    if (pending.length || session.upToDate)
+      runtime(ctx).supabaseDatabasePassword = { scope, password };
+    else delete runtime(ctx).supabaseDatabasePassword;
     ctx.ui.log(
       `CLI 预演成功，输出识别到的待执行文件：${pending.join(", ") || "无（未识别到文件名时请用官方 CLI 核对历史）"}。请审阅本地 SQL；工具不会自动判断其破坏性。`,
     );

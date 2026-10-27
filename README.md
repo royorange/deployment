@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.9.1.tgz
+npm install -g .artifacts/royorange-project-setup-0.9.2.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -121,7 +121,7 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 
 只有 manifest 明确声明 `migrationStrategy: "supabase-cli"` 才能使用官方迁移入口；`project-managed` 或未声明时，在安装 CLI、读取密码与连接数据库前拒绝。Fulcord 示例声明官方 CLI，Zoncord 示例声明项目自管。此门禁不代表已探测远端历史，不能自动证明账本兼容。
 
-数据库迁移使用冻结的 SQL 快照、显式 Ref、官方迁移历史与 `db push --dry-run`。预演后展示项目、环境、目标 Ref 和待执行文件；审阅 SQL 后，非生产环境用一次默认 No 的确认实际应用，生产环境需输入可读的 `项目名/production`，不再手抄 Ref。确认期间目标或账号绑定变化会拒绝继续；API 资源范围或官方 profile 身份仍会在相关步骤重新核验。取消、确认不匹配或错误会阻止后续应用发布。数据库密码仅通过子进程环境传递。scope PAT 权限不等于数据库密码权限，不能把它当成数据库操作的完整限制。工具不自动 reset/repair，不推送 seed/Vault 设置。
+数据库迁移使用冻结的 SQL 快照、显式 Ref、官方迁移历史与 `db push --dry-run`。发布计划已确认时直接进行只读账本检查；手动迁移入口仍先确认预演。预演后展示项目、环境、目标 Ref 和待执行文件；审阅 SQL 后，非生产环境用一次默认 No 的确认实际应用，生产环境需输入可读的 `项目名/production`，不再手抄 Ref。确认期间目标或账号绑定变化会拒绝继续；API 资源范围或官方 profile 身份仍会在相关步骤重新核验。取消、确认不匹配或错误会阻止后续应用发布。数据库密码通过子进程环境传递，只有预演明确确认待执行文件或 up-to-date 后才在当前进程复用；切换目标或身份、迁移核验失败会清除缓存。每次重试仍重新核对官方账本，后续应用发布失败不清除此已验证密码。密码不会进入保险库、公开状态、应用配置或发布适配器，退出进程后失效。scope PAT 权限不等于数据库密码权限，不能把它当成数据库操作的完整限制。工具不自动 reset/repair，不推送 seed/Vault 设置。
 
 ## AWS 与 Cloudflare Tunnel 部署准备
 
@@ -154,7 +154,7 @@ Token 只粘贴到明确标注“隐藏输入”的输入框。权限说明、�
 
 首次隐藏输入并确认至少 6 字符的主口令；以后只需解锁。保险库位于 `~/.config/project-setup/vault.json`（支持 `XDG_CONFIG_HOME`），使用 scrypt 派生密钥与 AES-256-GCM 加密，文件权限 600。主口令不保存，忘记无法恢复；解锁失败或取消会停止，不覆盖旧文件或自动降级。原有 `--vault` 数据与命令继续兼容。macOS 钥匙串自动解锁尚未实现。6 字符仅为最低要求；较长的随机口令能更好地防止保险库文件被复制后的离线破解。
 
-`--no-vault` 仅保存公开配置与账号绑定，本次凭据退出后丢弃，不读写保险库。`--memory` 连项目注册记录/绑定也不读取或自动保存；显式初始化配置文件或选择导出仍可写入目标。两者与 `--vault` 互斥。官方 CLI 登录凭据仍由官方工具管理，不复制到保险库；明确标注为临时的 Auth PAT、迁移数据库密码仍仅供对应操作使用。
+`--no-vault` 仅保存公开配置与账号绑定，本次凭据退出后丢弃，不读写保险库。`--memory` 连项目注册记录/绑定也不读取或自动保存；显式初始化配置文件或选择导出仍可写入目标。两者与 `--vault` 互斥。官方 CLI 登录凭据仍由官方工具管理，不复制到保险库；明确标注为临时的 Auth PAT 仅供对应操作使用，迁移数据库密码验证后仅在同进程、同目标及身份下复用，均不持久化。
 
 用户维护入口统一为可选 `.project-setup/{environment}/.env`，导入与导出使用同一默认路径，不再选择 app/deploy/pages 等用途。变量仍可自选，管理 Token 与特权清理 Key 默认不选。导入管理 Token 不能替代对应服务的账号连接。文件是明文且权限为 600；与当前值冲突时仅展示变量名，明确选择保留或替换。旧 `envExports` 声明与旧文件可兼容读取，但不再引导维护多个文件，也不会自动删除。部署由项目适配器内部生成权限隔离的临时/远端运行文件，用户不维护它们。工具不会自动读取或写入这个 `.env`，包括 `--memory` 和 `--no-vault` 模式；只有显式选择导入或导出才访问。
 
