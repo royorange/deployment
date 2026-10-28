@@ -107,6 +107,7 @@ export async function performGuideStage(
     progress: GuideProgress;
     release?: typeof runReleaseFlow;
     select?: typeof selectDevice;
+    componentIds?: string[];
   },
 ): Promise<GuideActionResult> {
   const call = async (id: string) => {
@@ -174,12 +175,14 @@ export async function performGuideStage(
   if (stage.id === "auth" && ctx.config.setup?.auth === "supabase")
     return { outcome: await call("supabase.auth") };
   if (stage.id === "application" || stage.id === "pages") {
-    const componentIds = ctx.config
-      .release!.components.filter(
-        (c) =>
-          c.kind === (stage.id === "application" ? "application" : "pages"),
-      )
-      .map((c) => c.id);
+    const componentIds =
+      options.componentIds ??
+      ctx.config
+        .release!.components.filter(
+          (c) =>
+            c.kind === (stage.id === "application" ? "application" : "pages"),
+        )
+        .map((c) => c.id);
     const result = await (options.release ?? runReleaseFlow)(ctx, {
       componentIds,
       deviceId: options.progress.deviceId,

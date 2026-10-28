@@ -253,3 +253,14 @@ test("missing or invalid current inputs cannot be verified by a stale success fl
   });
   assert.equal(external.find((item) => item.id === "auth")?.state, "manual");
 });
+
+test("guide stages honor an explicitly declared Pages-first release order", () => {
+  const next = structuredClone(config);
+  next.release!.order = ["pages", "application"];
+  assert.deepEqual(
+    deploymentGuideStages({ config: next, values, device })
+      .filter((s) => ["application", "pages"].includes(s.id))
+      .map((s) => s.id),
+    ["pages", "application"],
+  );
+});

@@ -7,6 +7,7 @@ import { guideStageBindings } from "./deployment-guide-bindings.ts";
 import {
   deploymentGuideStages,
   guideBinding,
+  guideReleaseGroups,
   type GuideHistory,
   type GuideStage,
   type GuideStageId,
@@ -19,6 +20,11 @@ import {
   type GuideActions,
 } from "./deployment-guide-actions.ts";
 import { openReleaseDevices, runReleaseFlow } from "./release-flow.ts";
+import {
+  inspectGuideApplication,
+  inspectGuidePages,
+  type GuideApplicationObservation,
+} from "./deployment-guide-inspection.ts";
 import { safeMessage, values, type Context } from "./wizard.ts";
 
 type Dependencies = {
@@ -26,6 +32,7 @@ type Dependencies = {
   commit?: () => Promise<string | undefined>;
   probe?: typeof probeGuide;
   release?: typeof runReleaseFlow;
+  inspect?: typeof inspectGuideApplication;
 };
 const labels = {
   missing: "待配置",
@@ -62,6 +69,12 @@ export async function deploymentGuide(
 ): Promise<"exit" | "back"> {
   if (!ctx.config.release?.environments.includes(ctx.env))
     throw new Error("当前环境没有可执行发布声明，请先由项目配置发布适配器。");
+  if (guideReleaseGroups(ctx.config).length > 2) {
+    ctx.ui.log(
+      "当前项目声明了交错组件发布顺序。请使用部署与发布 → 依次发布全部，按项目顺序执行；分组向导不会悄悄重排发布。",
+    );
+    return "back";
+  }
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
   const store = await GuideProgressStore.open(
     dependencies.directory ?? join(base, "project-setup", "guides"),
@@ -85,6 +98,22 @@ export async function deploymentGuide(
   if (device) progress.deviceId = device.id;
   const evidence: Partial<Record<GuideStageId, "verified" | "blocked">> = {};
   const attempted = new Set<GuideStageId>();
+  const completedComponents = new Set<string>();
+  let observations: GuideApplicationObservation[] = [];
+  const componentIds = (stage: GuideStageId) =>
+    ctx.config
+      .release!.components.filter((c) => c.kind === stage)
+      .map((c) => c.id);
+  const clearComponents = (stage: GuideStageId) => {
+    for (const id of componentIds(stage)) completedComponents.delete(id);
+    if (stage === "application") observations = [];
+  };
+  const syncComponents = (stage: GuideStageId) => {
+    const ids = componentIds(stage);
+    if (ids.length && ids.every((id) => completedComponents.has(id)))
+      evidence[stage] = "verified";
+    else delete evidence[stage];
+  };
   let stageBindings = guideStageBindings(
     ctx.config,
     values(ctx),
@@ -147,6 +176,7 @@ export async function deploymentGuide(
     for (const stage of changed) {
       delete evidence[stage];
       attempted.delete(stage);
+      clearComponents(stage);
     }
     if (binding !== progress.binding || changed.size) {
       progress = {
@@ -241,6 +271,12 @@ export async function deploymentGuide(
       `阶段 ${number}/${list.length}：${current.title}`,
       `配置已就绪 ${configured}/${configurable.length}；本次已核验 ${verified}/${verifiable.length}；当前：${labels[current.state]}`,
       missing.length ? `待补齐：${missing.join("、")}` : "",
+      ...(current.id === "application"
+        ? observations.map(
+            (item) =>
+              `${item.component}：${item.state === "running" ? `实际运行 ${item.current}；待发布源码 ${commit ?? "未知"}；控制器 ${item.controllerCommit}` : "尚未核验运行"}`,
+          )
+        : []),
       notice,
       "仅目标依赖变化时重查相关阶段；历史结果不代替本次核验。",
     ]
@@ -248,7 +284,37 @@ export async function deploymentGuide(
       .join("\n");
     const retryable =
       remoteStages.has(current.id) && !current.missingFields.length;
+    const retainable =
+      current.id === "application" &&
+      observations.some(
+        (item) =>
+          item.state === "running" && !completedComponents.has(item.component),
+      );
     const choice = await ctx.ui.select(question, [
+      ...(current.id === "application"
+        ? [
+            {
+              name: "只读检查已部署应用（不迁移、不重新发布）",
+              value: "inspect",
+            },
+          ]
+        : []),
+      ...(current.id === "pages"
+        ? [
+            {
+              name: "只读查看真实 Pages 部署（不发布）",
+              value: "inspect-pages",
+            },
+          ]
+        : []),
+      ...(retainable
+        ? [
+            {
+              name: "保留已核验的运行版本，继续其余组件（不应用待发布配置）",
+              value: "keep-running",
+            },
+          ]
+        : []),
       ...(retryable && current.state === "blocked"
         ? [{ name: "重新只读核验（不修改配置）", value: "recheck" }]
         : []),
@@ -293,6 +359,78 @@ export async function deploymentGuide(
           "发布与基础健康检查已完成；业务验收仍按项目清单执行，未自动标记业务全部通过。",
         );
       return choice === "back" ? "back" : "exit";
+    }
+    if (choice === "inspect-pages") {
+      delete evidence.pages;
+      clearComponents("pages");
+      try {
+        const result = await inspectGuidePages(ctx);
+        notice = safeMessage(new Error(result.message), ctx);
+      } catch (error) {
+        if (interrupted(error)) throw error;
+        notice = safeMessage(error, ctx);
+      }
+      forced = true;
+      continue;
+    }
+    if (choice === "inspect") {
+      rebind();
+      clearComponents("application");
+      delete evidence.application;
+      try {
+        observations = await (dependencies.inspect ?? inspectGuideApplication)(
+          ctx,
+          device,
+        );
+        // Only declared component observations are eligible; failed/unknown checks never carry completion.
+        const declared = new Set(componentIds("application"));
+        if (
+          observations.some((item) => !declared.has(item.component)) ||
+          new Set(observations.map((item) => item.component)).size !==
+            observations.length
+        )
+          throw new Error("只读检查返回未知或重复组件，未采纳运行证据。");
+        notice =
+          observations.map((item) => item.message).join("\n") ||
+          "没有可核验的应用组件。";
+      } catch (error) {
+        if (interrupted(error)) throw error;
+        observations = [];
+        evidence.application = "blocked";
+        notice = safeMessage(error, ctx);
+      }
+      forced = true;
+      continue;
+    }
+    if (choice === "keep-running") {
+      rebind();
+      if (!observations.some((item) => item.state === "running")) {
+        notice = "目标或配置已变化，运行证据已失效；请重新只读检查。";
+        continue;
+      }
+      for (const item of observations) {
+        if (
+          item.state !== "running" ||
+          !item.current ||
+          !/^[a-f0-9]{40}$/.test(item.current)
+        )
+          continue;
+        completedComponents.add(item.component);
+        record({
+          stage: "application",
+          outcome: "verified",
+          commit: item.current,
+          component: item.component,
+          phase: "verify",
+        });
+      }
+      syncComponents("application");
+      notice =
+        "已保留本次核验的实际运行版本；待发布源码与配置尚未应用。不重复迁移或发布这些组件，业务仍待验收。";
+      if (evidence.application === "verified") delete progress.cursor;
+      forced = false;
+      await save();
+      continue;
     }
     if (choice === "recheck") {
       attempted.delete(current.id);
@@ -355,6 +493,7 @@ export async function deploymentGuide(
         await repair(ctx);
         rebind();
         delete evidence.pages;
+        clearComponents("pages");
         if (action === "deployment.management-token") {
           delete evidence.tunnel;
           attempted.delete("tunnel");
@@ -386,20 +525,33 @@ export async function deploymentGuide(
         continue;
       }
     }
+    if (["application", "pages"].includes(current.id) && complete(current))
+      clearComponents(current.id);
+    if (current.id === "application") observations = [];
     // Retain unrelated observations; publication must be explicitly checked again after adjustments.
     const invalidated: GuideStageId[] = [current.id];
-    if (!["pages", "acceptance"].includes(current.id))
+    if (["application", "pages"].includes(current.id))
+      invalidated.push("acceptance");
+    else if (current.id !== "acceptance")
       invalidated.push("application", "pages", "acceptance");
     for (const stage of invalidated) {
       delete evidence[stage];
       attempted.delete(stage);
+      if (!["application", "pages"].includes(current.id))
+        clearComponents(stage);
     }
+    const operationBinding = stageBindings[current.id];
     try {
       const result = await performGuideStage(ctx, current, {
         actions,
         devices,
         progress,
         release: dependencies.release,
+        componentIds: ["application", "pages"].includes(current.id)
+          ? componentIds(current.id).filter(
+              (id) => !completedComponents.has(id),
+            )
+          : undefined,
       });
       if (result.device) {
         device = result.device;
@@ -409,7 +561,36 @@ export async function deploymentGuide(
       if (current.id === "import") progress.importDisposition = "imported";
       const outcome = operationResult(result.outcome);
       if (result.release) {
+        if (stageBindings[current.id] !== operationBinding)
+          throw new Error(
+            "发布期间目标或配置已变化；旧目标回执未采纳为当前目标成功，请重新只读核验。已完成的外部操作不会自动撤销。",
+          );
+        if (
+          result.release.state !== "health-checked" &&
+          result.release.receipts.length &&
+          result.release.receipts.every((r) => r.state === "health-checked")
+        )
+          throw new Error(
+            "发布流程与组件回执结果不一致，未采纳完成状态。请重新检查。",
+          );
         for (const receipt of result.release.receipts) {
+          if (
+            !componentIds(current.id).includes(receipt.component) ||
+            receipt.project !== ctx.config.project ||
+            receipt.environment !== ctx.env
+          )
+            throw new Error("发布回执与当前组件目标不一致，未标记完成。");
+          if (
+            receipt.state === "health-checked" &&
+            commit &&
+            receipt.commit !== commit
+          )
+            throw new Error(
+              "发布回执的提交与当前期望源码不同，未采纳完成状态。",
+            );
+          if (receipt.state === "health-checked")
+            completedComponents.add(receipt.component);
+          else completedComponents.delete(receipt.component);
           record({
             stage: current.id,
             outcome:
@@ -432,8 +613,7 @@ export async function deploymentGuide(
               : {}),
           });
         }
-        if (result.release.state === "health-checked")
-          evidence[current.id] = "verified";
+        syncComponents(current.id);
         const changed = result.release.receipts.some(
           (r) => r.database === "applied" || r.database === "unknown",
         );

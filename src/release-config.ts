@@ -12,6 +12,13 @@ export type ReleaseConfig = {
   ciWorkflow: string;
   buildWorkflow?: string;
   buildWorkflowRef?: string;
+  localBuild?: {
+    adapter: string;
+    environments: string[];
+    outputFields: string[];
+  };
+  ciTransientFallback?: { environments: string[]; maxAgeSeconds: number };
+  order?: string[];
   environments: string[];
   publicFields?: string[];
   components: ReleaseComponent[];
@@ -50,6 +57,9 @@ export function validateRelease(
     "publicFields",
     "components",
     "lifecycle",
+    "localBuild",
+    "ciTransientFallback",
+    "order",
   ]);
   if (
     !config.repository ||
@@ -84,6 +94,57 @@ export function validateRelease(
     release.environments.some((env) => !config.environments.includes(env))
   )
     throw new Error("发布环境必须为项目已声明的环境。");
+  if (release.localBuild !== undefined) {
+    keys(release.localBuild, ["adapter", "environments", "outputFields"]);
+    const build = release.localBuild;
+    if (
+      typeof build.adapter !== "string" ||
+      build.adapter.length > 200 ||
+      !/^deploy\/[A-Za-z0-9][A-Za-z0-9_./-]*\.(mts|mjs)$/.test(build.adapter) ||
+      build.adapter.split("/").some((part) => ["..", ".", ""].includes(part)) ||
+      !Array.isArray(build.environments) ||
+      !build.environments.length ||
+      build.environments.length > 10 ||
+      new Set(build.environments).size !== build.environments.length ||
+      build.environments.some((env) => !release.environments.includes(env)) ||
+      !Array.isArray(build.outputFields) ||
+      !build.outputFields.length ||
+      build.outputFields.length > 50 ||
+      new Set(build.outputFields).size !== build.outputFields.length ||
+      build.outputFields.some(
+        (field) =>
+          typeof field !== "string" ||
+          !Object.hasOwn(config.variables, field) ||
+          !Object.hasOwn(definitions, field) ||
+          definitions[field]!.secret ||
+          !release.publicFields?.includes(field),
+      )
+    )
+      throw new Error(
+        "本地构建需要已跟踪适配器、明确环境与已声明的公开产物字段。",
+      );
+  }
+  if (release.ciTransientFallback !== undefined) {
+    keys(release.ciTransientFallback, ["environments", "maxAgeSeconds"]);
+    const policy = release.ciTransientFallback;
+    if (
+      !Array.isArray(policy.environments) ||
+      !policy.environments.length ||
+      policy.environments.length > 10 ||
+      new Set(policy.environments).size !== policy.environments.length ||
+      policy.environments.some(
+        (env) =>
+          !release.environments.includes(env) ||
+          /^(production|prod|live)$/i.test(env),
+      ) ||
+      !Number.isSafeInteger(policy.maxAgeSeconds) ||
+      policy.maxAgeSeconds < 1 ||
+      policy.maxAgeSeconds > 300
+    )
+      throw new Error(
+        "CI临时降级仅允许明确的非生产环境与最多300秒的本次成功证据。",
+      );
+  }
   if (release.lifecycle !== undefined) {
     keys(release.lifecycle, ["adapter", "environments"]);
     const lifecycle = release.lifecycle;
@@ -180,4 +241,12 @@ export function validateRelease(
     )
       throw new Error("发布迁移策略与项目账本不一致。");
   }
+  if (
+    release.order !== undefined &&
+    (!Array.isArray(release.order) ||
+      release.order.length !== ids.size ||
+      new Set(release.order).size !== ids.size ||
+      release.order.some((id) => !ids.has(id)))
+  )
+    throw new Error("发布顺序必须包含每个声明组件且仅出现一次。");
 }

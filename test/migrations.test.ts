@@ -14,6 +14,8 @@ import { migrationSession } from "../src/migrations.ts";
 import { run, type RunOptions } from "../src/process.ts";
 import { releaseMigrations, type Context } from "../src/wizard.ts";
 import { projectKey } from "../src/config.ts";
+import { createReleaseCiGate } from "../src/release-ci-policy.ts";
+import { CommandExecutionError } from "../src/process.ts";
 
 test("official-profile migrations recheck the account before apply and do not receive a management PAT", async () => {
   const root = await mkdtemp(join(tmpdir(), "setup-migration-test-"));
@@ -819,5 +821,154 @@ test("exact commit migrations ignore local git replacement refs", async () => {
     assert.equal((await releaseMigrations(f.ctx, sha))?.state, "applied");
   } finally {
     await f.close();
+  }
+});
+
+test("release SQL is gated after confirmation and identity checks, without calling the hook for up-to-date", async () => {
+  for (const upToDate of [false, true]) {
+    const f = await releaseFixture();
+    try {
+      if (upToDate) f.setOutputs(["Remote database is up to date."]);
+      let confirmed = false,
+        gated = false;
+      const originalConfirm = f.ctx.ui.confirm;
+      f.ctx.ui.confirm = async (message) => {
+        const result = await originalConfirm(message);
+        if (message.includes("实际应用")) confirmed = true;
+        return result;
+      };
+      const originalRunner = f.ctx.runner;
+      f.ctx.runner = async (command, args, options) => {
+        if (args[0] === "db" && !args.includes("--dry-run"))
+          assert.equal(gated, true);
+        return originalRunner(command, args, options);
+      };
+      const result = await releaseMigrations(f.ctx, undefined, async () => {
+        assert.equal(confirmed, true);
+        assert.equal(f.calls.at(-1)?.[0], "whoami");
+        gated = true;
+      });
+      assert.equal(gated, !upToDate);
+      assert.equal(result?.state, upToDate ? "up-to-date" : "applied");
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("CI evidence expiring while SQL confirmation waits prevents the actual database write", async () => {
+  const f = await releaseFixture();
+  let now = 0,
+    reads = 0,
+    beforeApply = 0;
+  try {
+    const sha = "a".repeat(40);
+    const gate = await createReleaseCiGate({
+      repository: "fixture/app",
+      workflow: "ci.yml",
+      sha,
+      environment: "staging",
+      transientFallback: { maxAgeSeconds: 300 },
+      now: () => now,
+      sleep: async () => {},
+      confirm: async () => true,
+      runner: async () => {
+        if (reads++)
+          throw new CommandExecutionError("gh", 1, {
+            httpStatus: 429,
+            retryAfterSeconds: 60,
+          });
+        return JSON.stringify({
+          total_count: 1,
+          workflow_runs: [
+            {
+              id: 1,
+              run_number: 1,
+              run_attempt: 1,
+              created_at: "2026-10-28T00:00:00Z",
+              path: ".github/workflows/ci.yml",
+              head_sha: sha,
+              head_repository: { full_name: "fixture/app", fork: false },
+              event: "push",
+              status: "completed",
+              conclusion: "success",
+            },
+          ],
+        });
+      },
+    });
+    const original = f.ctx.ui.confirm;
+    f.ctx.ui.confirm = async (message) => {
+      if (message.includes("实际应用")) now = 301_000;
+      return original(message);
+    };
+    await assert.rejects(
+      releaseMigrations(f.ctx, undefined, async () => {
+        beforeApply++;
+        await gate.recheck();
+      }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /CI/);
+        assert.ok(!error.message.includes("迁移可能已应用"));
+        return true;
+      },
+    );
+    assert.equal(beforeApply, 1);
+    assert.equal(
+      f.calls.filter((args) => args[0] === "db" && !args.includes("--dry-run"))
+        .length,
+      0,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("CI confirmation cannot change the frozen SQL snapshot before the write starts", async () => {
+  for (const change of ["modify", "add", "remove"] as const) {
+    const f = await releaseFixture();
+    try {
+      const commit = await commitFixture(f.ctx.root);
+      let workdir = "",
+        writes = 0;
+      const session = await migrationSession(
+        f.ctx.root,
+        releaseRef,
+        undefined,
+        "fixture-db-password",
+        async (command, args, options) => {
+          if (command === "git") return run(command, args, options);
+          if (args[0] === "--version") return "2.120.0";
+          workdir = options!.cwd!;
+          if (args[0] === "db" && !args.includes("--dry-run")) writes++;
+          return releaseFile;
+        },
+        undefined,
+        undefined,
+        commit,
+        async () => {
+          const path = join(workdir, "supabase/migrations", releaseFile);
+          if (change === "modify")
+            await writeFile(path, "select 'unreviewed';");
+          if (change === "add")
+            await writeFile(
+              join(workdir, "supabase/migrations/202610130001_extra.sql"),
+              "select 2;",
+            );
+          if (change === "remove") await rm(path);
+        },
+      );
+      try {
+        await session.preview();
+        await assert.rejects(session.apply(), /快照.*变化/);
+        assert.equal(writes, 0);
+        assert.equal(session.applyStarted, false);
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await f.close();
+    }
   }
 });

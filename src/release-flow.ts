@@ -67,7 +67,14 @@ export async function runReleaseFlow(
           value: `component:${component.id}`,
         })),
         ...(release.components.length > 1
-          ? [{ name: "依次发布全部（应用先于Pages）", value: "all" }]
+          ? [
+              {
+                name: release.order
+                  ? "依次发布全部（项目声明顺序）"
+                  : "依次发布全部（应用先于Pages）",
+                value: "all",
+              },
+            ]
           : []),
         { name: "返回", value: "back" },
       ]);
@@ -89,7 +96,11 @@ export async function runReleaseFlow(
     }
     const components = ids
       .map((id) => release.components.find((component) => component.id === id)!)
-      .sort((a, b) => Number(a.kind === "pages") - Number(b.kind === "pages"));
+      .sort((a, b) =>
+        release.order
+          ? release.order.indexOf(a.id) - release.order.indexOf(b.id)
+          : Number(a.kind === "pages") - Number(b.kind === "pages"),
+      );
     if (
       components.some((component) => component.kind === "application") &&
       ctx.config.deploymentTopology === "aws-tunnel" &&

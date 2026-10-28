@@ -38,3 +38,9 @@ Tunnel 初始化采用显式空配置快照；HTTP 错误、缺失 `config` 或�
 `lifecycle-protocol.ts` 验证独立的 inspect/apply 协议；`lifecycle-engine.ts` 冻结受信适配器、公开目标、设备和控制提交。状态检查不要求 CI、不写远端资源；变更在 CI 通过后使用与发布共享的作用域锁，预览、确认并以远端快照令牌调用 apply，随后重新检查目标状态。`lifecycle-menu.ts` 在部署菜单内提供按需刷新、停止、恢复和兼容版本回退，外层仍为六项。
 
 `lifecycle-audit.ts` 只记录公开的操作、版本、设备和结果。请求不接收 runtimeValues 或管理凭据，不调用迁移。状态为 unknown/busy 时阻止变更；读取错误不能被当作未部署。项目适配器负责远端锁、容器归属、资源约束、兼容性及恢复日志；工具不会猜测旧版本安全性，也不自动降级数据库。
+
+## 0.10 构建、CI证据与只读恢复
+
+`release-build.ts` 通过受信项目适配器执行plan/build，绑定完整源码和公开配置；产物采用与业务发布分开。`release-ci-policy.ts` 以单次gate实例维护已核验CI记录，临时故障的显式非生产降级最多300秒，回执记录真实run attempt与降级事实。`github-read.ts` 只解析固定只读CI请求的白名单HTTP元数据，不保留响应正文或凭据。默认严格模式保留。
+
+`deployment-guide-inspection.ts` 复用lifecycle inspect重新读取实际运行版本，显式保留旧版本只代表该版本当前健康。向导逐组件记录本次证据，配置变化和新发布尝试使旧证据失效。Pages API观测不自动通过HTTP/业务验收。完整设计、构建位置选择和Zoncord复合适配器/迁移账本门禁见 [RELEASE_DESIGN.md](RELEASE_DESIGN.md)。

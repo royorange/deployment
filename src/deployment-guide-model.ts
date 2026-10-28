@@ -113,6 +113,21 @@ export function guideBinding(
     .digest("hex");
 }
 
+/** A grouped guide can represent either type order, but never silently reorder interleaved releases. */
+export function guideReleaseGroups(
+  config: Config,
+): Array<"application" | "pages"> {
+  const components = config.release?.components ?? [];
+  const order = config.release?.order;
+  if (!order)
+    return ["application", "pages"].filter((kind) =>
+      components.some((c) => c.kind === kind),
+    ) as Array<"application" | "pages">;
+  return order
+    .map((id) => components.find((c) => c.id === id)!.kind)
+    .filter((kind, index, kinds) => index === 0 || kind !== kinds[index - 1]);
+}
+
 /** Recompute navigation from facts; successful void actions are deliberately not an input. */
 export function deploymentGuideStages(input: {
   config: Config;
@@ -230,10 +245,11 @@ export function deploymentGuideStages(input: {
     );
   else if (config.setup?.auth && config.setup.auth !== "none")
     add("auth", "外部认证配置与回调", [], "manual");
-  if (components.some((item) => item.kind === "application"))
-    add("application", "CI、迁移与应用发布");
-  if (components.some((item) => item.kind === "pages"))
-    add("pages", "Pages 发布与验证");
+  for (const kind of guideReleaseGroups(config))
+    add(
+      kind,
+      kind === "application" ? "CI、迁移与应用发布" : "Pages 发布与验证",
+    );
   add("acceptance", "应用业务验收", [], "manual");
   return stages;
 }

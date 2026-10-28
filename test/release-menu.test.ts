@@ -63,6 +63,7 @@ async function fixture(answers: string[]) {
             {
               id: 1,
               run_number: 1,
+              run_attempt: 1,
               created_at: "2026-10-21T00:00:00Z",
               head_sha: sha,
               head_repository: { full_name: "owner/fixture", fork: false },
@@ -160,6 +161,55 @@ test("device profiles can be added and reused inside deployment without opening 
     await f.run();
     assert.ok(f.logs.some((line) => line.includes("deploy@192.0.2.10")));
     assert.equal(f.calls.length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("local construction is selectable without querying GitHub or publishing components", async () => {
+  const f = await fixture(["ci", "local", "back"]);
+  f.ctx.config.variables.deploymentImage = "IMAGE";
+  f.ctx.config.release!.publicFields = ["deploymentImage"];
+  f.ctx.config.release!.localBuild = {
+    adapter: "deploy/build.mts",
+    environments: ["staging"],
+    outputFields: ["deploymentImage"],
+  };
+  await writeFile(join(f.ctx.root, "deploy/build.mts"), "// synthetic build");
+  const runner = f.ctx.runner;
+  f.ctx.runner = async (command, args, options) => {
+    if (command === "git" && args.includes("--error-unmatch"))
+      return "deploy/build.mts";
+    if (command === process.execPath) {
+      const input = JSON.parse(options!.input!);
+      f.calls.push({ command, args });
+      return JSON.stringify({
+        version: 1,
+        repository: input.repository,
+        project: input.project,
+        environment: input.environment,
+        sourceCommit: input.sourceCommit,
+        ready: true,
+        summary: [],
+        missing: [],
+        effects: [],
+        outputs:
+          args.at(-1) === "build"
+            ? { deploymentImage: `ghcr.io/owner/app@sha256:${"b".repeat(64)}` }
+            : {},
+      });
+    }
+    return runner(command, args, options);
+  };
+  try {
+    await f.run();
+    assert.equal(f.calls.filter((call) => call.command === "gh").length, 0);
+    assert.deepEqual(
+      f.calls
+        .filter((call) => call.command === process.execPath)
+        .map((call) => call.args.at(-1)),
+      ["plan", "build"],
+    );
   } finally {
     await f.close();
   }

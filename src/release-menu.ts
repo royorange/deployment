@@ -1,3 +1,4 @@
+import { runLocalBuild } from "./release-build.ts";
 import { lifecycleMenu } from "./lifecycle-menu.ts";
 import { lifecycleAvailable } from "./lifecycle-engine.ts";
 import { deviceMenu } from "./device-menu.ts";
@@ -19,7 +20,7 @@ export async function releaseMenu(ctx: Context): Promise<void> {
         { name: "创建或配置 Tunnel / DNS / 连接 Token", value: "tunnel" },
         { name: "导入/导出统一 .env（可选）", value: "export" },
         { name: "部署主机（保存 IP、用户名、端口）", value: "devices" },
-        { name: "核验 CI / 启动镜像构建", value: "ci" },
+        { name: "构建产物 / 核验 CI", value: "ci" },
         { name: "返回主菜单", value: "back" },
       ],
     );
@@ -82,6 +83,21 @@ export async function releaseMenu(ctx: Context): Promise<void> {
           "当前环境尚未声明项目release适配器和组件。请由项目维护者提交deploy适配器与release映射；主机与Tunnel仍可先配置。",
         );
       if (selected === "ci") {
+        if (release.localBuild?.environments.includes(ctx.env)) {
+          const buildMode = await ctx.ui.select(
+            "构建来源 — 构建不等于CI通过或应用发布",
+            [
+              { name: "本地构建已提交源码（项目适配器）", value: "local" },
+              { name: "核验GitHub CI / 请求Actions构建", value: "github" },
+              { name: "返回", value: "back" },
+            ],
+          );
+          if (buildMode === "back") continue;
+          if (buildMode === "local") {
+            await runLocalBuild(ctx);
+            continue;
+          }
+        }
         const sha = await releaseCheckout(ctx);
         const ci = await readReleaseCi({
           repository: ctx.config.repository,
@@ -90,7 +106,7 @@ export async function releaseMenu(ctx: Context): Promise<void> {
           runner: ctx.runner,
         });
         ctx.ui.log(
-          `提交：${sha}；CI：${ci.state}${ci.url ? `；${ci.url}` : ""}`,
+          `提交：${sha}；CI：${ci.state}${ci.reason ? `（${ci.reason}）` : ""}${ci.retryAfterSeconds ? `；建议${ci.retryAfterSeconds}秒后重试` : ""}${ci.url ? `；${ci.url}` : ""}`,
         );
         if (
           release.buildWorkflow &&

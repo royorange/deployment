@@ -4,7 +4,10 @@ import { join, resolve } from "node:path";
 import { allFields, validateField } from "./config.ts";
 import { validateDevice, type Device } from "./devices.ts";
 import { noSymlinks, writePrivate } from "./files.ts";
-import { assertReleaseCi } from "./release-ci.ts";
+import {
+  createReleaseCiGate,
+  type ReleaseCiGateSnapshot,
+} from "./release-ci-policy.ts";
 import { activeReleaseScopes } from "./release-lock.ts";
 import { releaseRuntimeValues } from "./release-runtime.ts";
 import {
@@ -33,15 +36,20 @@ export type ReleaseReceipt = {
   commit: string;
   deviceId?: string;
   ciRunId: number;
+  ciRunAttempt?: number;
+  ciVerification?: ReleaseCiGateSnapshot;
   state: "planned" | "cancelled" | "failed" | "deployed" | "health-checked";
   database: "not-run" | "applied" | "up-to-date" | "unknown";
   phase: string;
   checkedAt: string;
 };
 type Dependencies = {
+  ciSleep?: (milliseconds: number) => Promise<void>;
+  ciNow?: () => number;
   migrate?: (
     ctx: Context,
     commit?: string,
+    beforeApply?: () => Promise<void>,
   ) => Promise<MigrationResult | undefined>;
   cloudflareToken?: (ctx: Context) => Promise<string>;
 };
@@ -68,13 +76,64 @@ export async function runRelease(
     throw new Error(
       "本组件使用项目自管迁移；尚未声明受控初始化步骤，已阻止自动发布，不混用官方迁移账本。",
     );
+  const targetBinding = () =>
+    JSON.stringify({
+      root: ctx.root,
+      project: ctx.config.project,
+      environment: ctx.env,
+      repository: ctx.config.repository,
+      release: ctx.config.release,
+      migrationStrategy: ctx.config.migrationStrategy,
+      variables: ctx.config.variables,
+      definitions: ctx.config.extraFields,
+      device,
+      targets: Object.fromEntries(
+        Object.entries(values(ctx))
+          .filter(([field]) => !allFields(ctx.config)[field]?.secret)
+          .sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    });
+  const target = targetBinding();
+  const assertTarget = () => {
+    if (targetBinding() !== target)
+      throw new Error(
+        "发布目标、账号绑定或声明已变化；未继续写入，请重新审阅计划。",
+      );
+  };
   const sha = await releaseCheckout(ctx);
-  const ci = await assertReleaseCi({
+  assertTarget();
+  const ciGate = await createReleaseCiGate({
     repository: ctx.config.repository,
     workflow: config.ciWorkflow,
     sha,
     runner: ctx.runner,
+    environment: ctx.env,
+    sleep: deps.ciSleep,
+    now: deps.ciNow,
+    ...(config.ciTransientFallback?.environments.includes(ctx.env)
+      ? {
+          transientFallback: {
+            maxAgeSeconds: config.ciTransientFallback.maxAgeSeconds,
+          },
+          confirm: (message: string) => ctx.ui.confirm(message),
+        }
+      : {}),
   });
+  assertTarget();
+  const assertCiFresh = () => {
+    const evidence = ciGate.snapshot();
+    if (!evidence.degraded) return;
+    const age = (deps.ciNow ?? Date.now)() - Date.parse(evidence.observedAt);
+    const maxAge = config.ciTransientFallback?.maxAgeSeconds;
+    if (
+      maxAge === undefined ||
+      !Number.isFinite(age) ||
+      age < 0 ||
+      age > maxAge * 1000
+    )
+      throw new Error("CI 降级证据已过期；请重新核验后发布。");
+  };
+  const ci = ciGate.initial;
   const receipt: ReleaseReceipt = {
     version: 1,
     project: ctx.config.project,
@@ -83,6 +142,8 @@ export async function runRelease(
     commit: sha,
     ...(device ? { deviceId: device.id } : {}),
     ciRunId: ci.runId!,
+    ciRunAttempt: ci.runAttempt,
+    ciVerification: ciGate.snapshot(),
     state: "planned",
     database: "not-run",
     phase: "plan",
@@ -127,7 +188,9 @@ export async function runRelease(
       receipt.state = "cancelled";
       return receipt;
     }
+    assertTarget();
     const runtimeValues = await releaseRuntimeValues(ctx, component);
+    assertTarget();
     runtimeSecrets = Object.values(runtimeValues ?? {}).filter(Boolean);
     const publicValues: Record<string, string> = {};
     for (const field of config.publicFields ?? []) {
@@ -160,8 +223,11 @@ export async function runRelease(
     }
     const env = releaseProcessEnvironment(extra);
     const call = async (phase: "plan" | "deploy" | "verify") => {
+      assertTarget();
       if ((await releaseCheckout(ctx)) !== sha)
         throw new Error("执行适配器前提交或工作区已变化，已停止。");
+      assertTarget();
+      if (phase === "deploy") assertCiFresh();
       receipt.phase = phase;
       const output = adapterOutput(
         await ctx.runner(
@@ -198,6 +264,7 @@ export async function runRelease(
       receipt.state = "cancelled";
       return receipt;
     }
+    assertTarget();
     if (
       ctx.env === "production" &&
       (await ctx.ui.input(
@@ -208,21 +275,29 @@ export async function runRelease(
       return receipt;
     }
     const recheck = async () => {
+      assertTarget();
       if ((await releaseCheckout(ctx)) !== sha)
         throw new Error("发布期间本地提交发生变化，已停止。");
-      const latest = await assertReleaseCi({
-        repository: ctx.config.repository!,
-        workflow: config.ciWorkflow,
-        sha,
-        runner: ctx.runner,
-      });
-      if (latest.runId !== ci.runId)
-        throw new Error("CI运行已变化，请重新审阅发布计划。");
+      assertTarget();
+      await ciGate.recheck();
+      if ((await releaseCheckout(ctx)) !== sha)
+        throw new Error("CI 确认期间本地提交发生变化，已停止。");
+      assertTarget();
+      assertCiFresh();
+      receipt.ciVerification = ciGate.snapshot();
     };
     await recheck();
     if (component.migrations === "supabase-cli") {
       receipt.phase = "migration";
-      const migration = await (deps.migrate ?? releaseMigrations)(ctx, sha);
+      const migration = await (deps.migrate ?? releaseMigrations)(
+        ctx,
+        sha,
+        async () => {
+          receipt.phase = "pre-migration-check";
+          await recheck();
+          receipt.phase = "migration";
+        },
+      );
       if (!migration) {
         receipt.state = "cancelled";
         return receipt;
@@ -256,6 +331,7 @@ export async function runRelease(
     return receipt;
   } finally {
     receipt.checkedAt = new Date().toISOString();
+    receipt.ciVerification = ciGate.snapshot();
     try {
       if (ctx.releaseDirectory && ctx.storageMode !== "memory" && lock)
         await writePrivate(

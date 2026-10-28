@@ -82,6 +82,7 @@ export async function migrationSession(
   auth?: { profile: string; identity: string },
   verifyResource?: () => Promise<void>,
   expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
 ) {
   if (!/^[a-z]{20}$/.test(ref)) throw new Error("Project Ref 格式无效。");
   if (expectedCommit !== undefined && !/^[a-f0-9]{40}$/.test(expectedCommit))
@@ -178,8 +179,8 @@ export async function migrationSession(
     );
     let previewed = false;
     let upToDate = false;
-    const push = async (dry: boolean) => {
-      await verify();
+    let applyStarted = false;
+    const verifySnapshot = async () => {
       if (committed) {
         const directory = join(workdir, "supabase/migrations");
         await noSymlinks(directory);
@@ -197,6 +198,15 @@ export async function migrationSession(
           )
             throw new Error("迁移快照字节已变化，已阻止数据库操作。");
         }
+      }
+    };
+    const push = async (dry: boolean) => {
+      await verify();
+      await verifySnapshot();
+      if (!dry) {
+        await beforeApply?.();
+        await verifySnapshot();
+        applyStarted = true;
       }
       return runner(
         "supabase",
@@ -218,6 +228,9 @@ export async function migrationSession(
       get upToDate() {
         return upToDate;
       },
+      get applyStarted() {
+        return applyStarted;
+      },
       preview: async () => {
         previewed = false;
         upToDate = false;
@@ -237,6 +250,7 @@ export async function migrationSession(
       },
       apply: async () => {
         if (!previewed) throw new Error("必须先完成预演，再应用相同迁移快照。");
+        applyStarted = false;
         previewed = false;
         upToDate = false;
         await push(false);

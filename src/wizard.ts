@@ -1414,9 +1414,10 @@ export type MigrationReleaseResult = {
 export async function releaseMigrations(
   ctx: Context,
   expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
 ): Promise<MigrationReleaseResult | undefined> {
   try {
-    return await migrations(ctx, true, expectedCommit);
+    return await migrations(ctx, true, expectedCommit, beforeApply);
   } catch (error) {
     if (
       error instanceof Error &&
@@ -1432,9 +1433,10 @@ async function migrations(
   ctx: Context,
   release = false,
   expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
 ): Promise<MigrationReleaseResult | undefined> {
   try {
-    return await migrationAttempt(ctx, release, expectedCommit);
+    return await migrationAttempt(ctx, release, expectedCommit, beforeApply);
   } catch (error) {
     // Redact both the current candidate and the verified password before clearing them.
     const message = safeMessage(error, ctx);
@@ -1455,6 +1457,7 @@ async function migrationAttempt(
   ctx: Context,
   release = false,
   expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
 ): Promise<MigrationReleaseResult | undefined> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
@@ -1558,6 +1561,10 @@ async function migrationAttempt(
       : undefined,
     verifyResource,
     expectedCommit,
+    async () => {
+      await beforeApply?.();
+      assertTarget();
+    },
   );
   try {
     ctx.ui.log(
@@ -1603,7 +1610,10 @@ async function migrationAttempt(
         await session.apply();
         await session.preview();
         if (!session.upToDate) throw new Error("post-apply status unconfirmed");
-      } catch {
+      } catch (error) {
+        if (!session.applyStarted) throw error;
+        // Raw CLI causes may include database credentials; keep only the controlled outcome.
+        // eslint-disable-next-line preserve-caught-error
         throw new Error(
           "迁移可能已应用，但应用后的复验未能明确确认 up-to-date；已阻止后续应用发布。未回滚数据库，也未执行 reset、repair 或 down，请核对远端迁移账本后重试。",
         );

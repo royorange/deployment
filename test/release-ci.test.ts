@@ -35,6 +35,7 @@ function runnerFor(runs: unknown[], totalCount = runs.length): Runner {
       "github.com",
       "--method",
       "GET",
+      "--include",
       `repos/${repository}/actions/workflows/${workflow}/runs?head_sha=${sha}&per_page=100&page=1`,
     ]);
     return JSON.stringify({ total_count: totalCount, workflow_runs: runs });
@@ -50,6 +51,7 @@ test("release CI uses a fixed read-only endpoint and projects public verified ev
     state: "passed",
     sha,
     runId: 101,
+    runAttempt: 1,
     url: "https://github.com/example/application/actions/runs/101",
     branch: "staging",
   });
@@ -110,6 +112,20 @@ test("rerun selects highest attempt and pending reruns never inherit previous su
       })
     ).state,
     "failed",
+  );
+});
+test("missing run attempt is malformed rather than assumed to be the first attempt", async () => {
+  const { run_attempt: _attempt, ...withoutAttempt } = base;
+  assert.equal(_attempt, 1);
+  const evidence = await readReleaseCi({
+    ...target,
+    runner: runnerFor([withoutAttempt]),
+  });
+  assert.equal(evidence.state, "unknown");
+  assert.equal(evidence.reason, "malformed");
+  await assert.rejects(
+    assertReleaseCi({ ...target, runner: runnerFor([withoutAttempt]) }),
+    /CI/,
   );
 });
 
@@ -313,6 +329,7 @@ test("runner errors and assertion messages never expose remote output or credent
   };
   assert.deepEqual(await readReleaseCi({ ...target, runner }), {
     state: "unknown",
+    reason: "unavailable",
     sha,
   });
   for (const runs of [

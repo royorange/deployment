@@ -3,6 +3,7 @@ import { resolve, relative, isAbsolute } from "node:path";
 import type { Entry } from "./config.ts";
 import { environment, repository } from "./config.ts";
 import { noSymlinks, singleLine, variableName } from "./files.ts";
+import { githubReadMetadata, type GithubReadMetadata } from "./github-read.ts";
 
 export type RunOptions = {
   input?: string;
@@ -25,6 +26,50 @@ export class CommandUnavailableError extends Error {
     this.name = "CommandUnavailableError";
   }
 }
+export class CommandExecutionError extends Error {
+  readonly exitCode: number | null;
+  readonly timedOut: boolean;
+  readonly responseStarted: boolean;
+  readonly outputTruncated: boolean;
+  readonly httpStatus?: number;
+  readonly rateLimited?: boolean;
+  readonly retryAfterSeconds?: number;
+  constructor(
+    command: string,
+    code: number | null,
+    metadata: GithubReadMetadata & {
+      timedOut?: boolean;
+      responseStarted?: boolean;
+      outputTruncated?: boolean;
+    } = {},
+  ) {
+    super(
+      `${command} 操作失败或超时（退出码 ${code ?? "unknown"}）；已隐藏可能含凭据的输出。`,
+    );
+    this.name = "CommandExecutionError";
+    this.exitCode = code;
+    this.timedOut = metadata.timedOut === true;
+    this.responseStarted = metadata.responseStarted === true;
+    this.outputTruncated = metadata.outputTruncated === true;
+    if (
+      Number.isInteger(metadata.httpStatus) &&
+      metadata.httpStatus! >= 100 &&
+      metadata.httpStatus! <= 599
+    )
+      this.httpStatus = metadata.httpStatus;
+    if (
+      metadata.rateLimited === true &&
+      [403, 429].includes(this.httpStatus ?? 0)
+    )
+      this.rateLimited = true;
+    if (
+      Number.isSafeInteger(metadata.retryAfterSeconds) &&
+      metadata.retryAfterSeconds! >= 0 &&
+      metadata.retryAfterSeconds! <= 86_400
+    )
+      this.retryAfterSeconds = metadata.retryAfterSeconds;
+  }
+}
 export const run: Runner = (command, args, options = {}) =>
   new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
@@ -40,8 +85,11 @@ export const run: Runner = (command, args, options = {}) =>
     const output: Buffer[] = [];
     let size = 0;
     let failed = false;
+    let timedOut = false;
+    let stderrStarted = false;
     const timer = setTimeout(() => {
       failed = true;
+      timedOut = true;
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 1000).unref();
     }, options.timeout ?? 60_000);
@@ -55,7 +103,10 @@ export const run: Runner = (command, args, options = {}) =>
     child.stdout?.on("data", collect);
     // Child stderr can echo credentials; it is deliberately not forwarded or retained.
     if (options.captureStderr) child.stderr?.on("data", collect);
-    else child.stderr?.resume();
+    else
+      child.stderr?.on("data", () => {
+        stderrStarted = true;
+      });
     child.stdin?.on("error", () => {
       /* EPIPE is reported by the exit status. */
     });
@@ -68,9 +119,18 @@ export const run: Runner = (command, args, options = {}) =>
       clearTimeout(timer);
       if (code !== 0 || failed)
         reject(
-          new Error(
-            `${command} 操作失败或超时（退出码 ${code ?? "unknown"}）；已隐藏可能含凭据的输出。`,
-          ),
+          new CommandExecutionError(command, code, {
+            timedOut,
+            responseStarted: size > 0 || stderrStarted,
+            outputTruncated: size > 2_000_000,
+            ...(!options.captureStderr
+              ? githubReadMetadata(
+                  command,
+                  args,
+                  Buffer.concat(output).toString("utf8"),
+                )
+              : {}),
+          }),
         );
       else resolvePromise(Buffer.concat(output).toString("utf8"));
     });

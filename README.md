@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.9.2.tgz
+npm install -g .artifacts/royorange-project-setup-0.10.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -83,6 +83,19 @@ Pages 操作支持分别选择前台/后台组件，明确输入真实分支，�
 发布回执只含项目、环境、组件、SHA、设备标识、CI run 和阶段状态，默认保存在用户配置目录的 `releases` 下；内存模式仅在本次显示。迁移已完成但应用失败会保留数据库状态，不执行 down/reset/repair。项目适配器另行记录自己的发布与恢复证据。
 
 Fulcord 初始适配器只开放 staging，采用固定 digest 的 amd64 镜像、OCI revision 核验和独立候选目录；需主机具备 sudo -n、Docker Compose、严格 SSH 指纹、至少 768 MiB 可用内存与 4 GiB 可用磁盘，以及镜像仓库拉取权限。同一 SHA 的运行配置改变会拒绝复用该版本。合成文件/cleanup 暂不由此新发布适配器开放。以上是具体消费项目边界，不代表任意新项目已具备同样的发布脚本。
+
+## 构建、恢复与CI容错（0.10.0）
+
+完整设计和Zoncord接入边界见 [RELEASE_DESIGN.md](docs/RELEASE_DESIGN.md)。构建、CI、发布和业务验收是四种不同证据。
+
+- 应用阶段可选择只读检查现有部署，通过项目生命周期适配器读取实际运行版本，不访问数据库密码、不执行迁移、不查询CI。核验通过后可明确保留该运行版本继续其他组件；旧版本不等于当前源码/待发布配置已经上线。多组件同次向导只重试未完成项。重开仍重新检查远端。
+- Pages只读检查使用项目明确声明的branchField和真实API记录；没有分支映射不猜测staging地址，API success不代替HTTP、Access或业务验收。复杂交错组件顺序使用完整发布入口或项目复合适配器。
+- `release.order` 可指定全部组件的执行顺序；未声明保持原应用→Pages兼容顺序。顺序不等于依赖事务。Zoncord应由一个项目适配器复用现有版本组合流程，不能用独立Pages更新破坏已发布tuple。
+- `release.localBuild: {adapter, environments, outputFields}` 声明受信本地Node构建入口。在“部署与发布 → 构建产物 / 核验CI”选择本地或GitHub。本地入口只接收公开字段，plan/build均绑定repository、project、environment、sourceCommit；完成后复核源码，确认采用产物才更新待发布配置，不更改运行版本。镜像只接受不可变digest；没有CI成功不会因此获准发布。
+- CI读取区分限流、5xx、超时、权限和真实检查失败，遵守Retry-After并有限重试。默认严格阻止无法核验的发布。项目显式配置 `ciTransientFallback: {environments:["staging"], maxAgeSeconds:300}` 后，仅允许同次发布已实时核验成功的同仓库/workflow/SHA/runId/attempt短时证据，在后续明确临时故障时经确认继续，并记录降级。生产、无首次成功、真实失败、pending、身份/格式未知均不放行。
+- Actions仍为显式派发，不自动重发结果未知的构建请求。当前需人工核对构建回执/digest，自动下载和采用Actions产物尚未实现。GitHub全程不可用时的本地等价CI也尚未开放，不能用跳过检查替代。
+
+本地构建适配器输出单个JSON：`{version:1,repository,project,environment,sourceCommit,ready,summary,missing,effects,outputs}`。计划的outputs必须为空；构建成功必须包含全部声明outputFields（已知公开字段且属于release.publicFields）。不会将运行Key、管理Token或数据库密码作为构建输入。适配器是受信项目代码，不是安全沙箱；构建可能按已确认计划向镜像仓库推送产物。Fulcord消费入口使用已提交git archive上下文和明确linux/amd64；共享AWS主机不承担构建。
 
 ## Supabase：默认 API 连接
 

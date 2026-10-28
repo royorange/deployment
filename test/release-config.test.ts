@@ -100,3 +100,82 @@ test("runtime fields explicitly permit project secrets and reject management cre
       }),
     );
 });
+
+test("local build declarations are tracked adapters with public outputs and bounded environments", () => {
+  const config = {
+    ...base,
+    variables: { deploymentImage: "IMAGE", cloudflareToken: "TOKEN" },
+  };
+  const localBuild = {
+    adapter: "deploy/build.mts",
+    environments: ["staging"],
+    outputFields: ["deploymentImage"],
+  };
+  const declaration = {
+    ...release,
+    publicFields: ["deploymentImage"],
+    localBuild,
+  };
+  assert.ok(validateConfig({ ...config, release: declaration }));
+  for (const invalid of [
+    { ...localBuild, adapter: "../build.mts" },
+    { ...localBuild, adapter: "deploy/../build.mts" },
+    { ...localBuild, environments: ["production"] },
+    { ...localBuild, outputFields: [] },
+    { ...localBuild, outputFields: ["cloudflareToken"] },
+    { ...localBuild, outputFields: ["unknown"] },
+    { ...localBuild, command: "sh build.sh" },
+  ])
+    assert.throws(() =>
+      validateConfig({
+        ...config,
+        release: { ...declaration, localBuild: invalid },
+      }),
+    );
+  assert.throws(() =>
+    validateConfig({
+      ...config,
+      release: { ...declaration, publicFields: [] },
+    }),
+  );
+});
+
+test("transient CI fallback is explicitly scoped, short lived and never production", () => {
+  const ciTransientFallback = { environments: ["staging"], maxAgeSeconds: 300 };
+  assert.ok(
+    validateConfig({ ...base, release: { ...release, ciTransientFallback } }),
+  );
+  for (const invalid of [
+    { ...ciTransientFallback, environments: [] },
+    { ...ciTransientFallback, environments: ["production"] },
+    { ...ciTransientFallback, environments: ["prod"] },
+    { ...ciTransientFallback, maxAgeSeconds: 301 },
+    { ...ciTransientFallback, maxAgeSeconds: 0 },
+    { ...ciTransientFallback, maxAgeSeconds: "300" },
+    { ...ciTransientFallback, skipFailures: true },
+  ])
+    assert.throws(() =>
+      validateConfig({
+        ...base,
+        release: { ...release, ciTransientFallback: invalid },
+      }),
+    );
+});
+
+test("explicit component order lists every component once without changing old manifests", () => {
+  const components = [
+    release.components[0]!,
+    { ...release.components[0]!, id: "api", kind: "application" },
+  ];
+  const declaration = { ...release, components, order: ["pages", "api"] };
+  assert.ok(validateConfig({ ...base, release: declaration }));
+  for (const order of [
+    ["api"],
+    ["pages", "pages"],
+    ["pages", "unknown"],
+    "pages",
+  ])
+    assert.throws(() =>
+      validateConfig({ ...base, release: { ...declaration, order } }),
+    );
+});

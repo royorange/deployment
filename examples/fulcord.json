@@ -27,7 +27,8 @@
     "deploymentImage": "FULCORD_IMAGE",
     "tunnelImage": "CLOUDFLARED_IMAGE",
     "syntheticFilesEnabled": "FULCORD_SYNTHETIC_FILES_ENABLED",
-    "cleanupEnabled": "FULCORD_CLEANUP_ENABLED"
+    "cleanupEnabled": "FULCORD_CLEANUP_ENABLED",
+    "pagesBranch": "CF_PAGES_BRANCH"
   },
   "defaults": {
     "staging": {
@@ -39,13 +40,15 @@
       "deploymentTarget": "staging",
       "remoteDirectory": "/opt/fulcord/staging",
       "syntheticFilesEnabled": "false",
-      "cleanupEnabled": "false"
+      "cleanupEnabled": "false",
+      "pagesBranch": "staging"
     },
     "production": {
       "deploymentRuntime": "aws-tunnel",
       "deploymentTarget": "production",
       "syntheticFilesEnabled": "false",
-      "cleanupEnabled": "false"
+      "cleanupEnabled": "false",
+      "pagesBranch": "main"
     }
   },
   "envExports": [
@@ -86,7 +89,8 @@
         "originField": "siteOrigin",
         "projectField": "pagesProject",
         "instructions": "使用当前环境真实Pages分支和已验证入口；AWS应用可访问后单独发布Pages。",
-        "docs": "docs/CLOUDFLARE.md"
+        "docs": "docs/CLOUDFLARE.md",
+        "branchField": "pagesBranch"
       },
       {
         "id": "application",
@@ -149,6 +153,23 @@
         "migrations": "none",
         "runtimeFields": []
       }
-    ]
+    ],
+    "ciTransientFallback": {
+      "environments": ["staging"],
+      "maxAgeSeconds": 300
+    },
+    "localBuild": {
+      "adapter": "deploy/build.mts",
+      "environments": ["staging"],
+      "outputFields": ["deploymentImage"]
+    },
+    "order": ["application", "pages"]
+  },
+  "extraFields": {
+    "pagesBranch": {
+      "label": "Pages 部署分支",
+      "kind": "text",
+      "secret": false
+    }
   }
 }

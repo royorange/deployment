@@ -567,3 +567,225 @@ test("assume-unchanged tracked source blocks publication despite a clean status"
     await f.close();
   }
 });
+
+test("CI attempt changes stop before migrations even when the run id stays unchanged", async () => {
+  const f = await fixture();
+  let reads = 0,
+    migrated = false;
+  const runner = f.ctx.runner;
+  f.ctx.runner = async (command, args, options) => {
+    const raw = await runner(command, args, options);
+    if (command !== "gh") return raw;
+    const body = JSON.parse(raw);
+    body.workflow_runs[0].run_attempt = ++reads;
+    return JSON.stringify(body);
+  };
+  try {
+    const result = await runRelease(f.ctx, "app", undefined, {
+      migrate: async () => {
+        migrated = true;
+        return undefined;
+      },
+    });
+    assert.equal(result.state, "failed");
+    assert.equal(migrated, false);
+    assert.equal(f.calls.filter((c) => c.cmd === process.execPath).length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("confirmed transient fallback is audited without inventing CI identities or skipping migration", async () => {
+  const { CommandExecutionError } = await import("../src/process.ts");
+  const f = await fixture();
+  f.ctx.config.release!.ciTransientFallback = {
+    environments: ["staging"],
+    maxAgeSeconds: 300,
+  };
+  const runner = f.ctx.runner;
+  let reads = 0,
+    migrations = 0,
+    fallbacks = 0;
+  f.ctx.runner = async (command, args, options) => {
+    if (command === "gh" && reads++ > 0)
+      throw new CommandExecutionError("gh", 1, {
+        httpStatus: 429,
+        rateLimited: true,
+      });
+    return runner(command, args, options);
+  };
+  f.ctx.ui.confirm = async (message) => {
+    if (message.includes("GitHub 暂时")) fallbacks++;
+    return true;
+  };
+  try {
+    const result = await runRelease(f.ctx, "app", undefined, {
+      ciSleep: async () => {},
+      migrate: async () => {
+        migrations++;
+        return { state: "up-to-date", ref: "b".repeat(20), files: [] };
+      },
+    });
+    assert.equal(result.state, "health-checked");
+    assert.equal(result.ciVerification?.degraded, true);
+    assert.equal(result.ciRunId, 1);
+    assert.equal(result.ciRunAttempt, 1);
+    assert.equal(result.database, "up-to-date");
+    assert.equal(migrations, 1);
+    assert.equal(fallbacks, 2);
+    assert.ok(
+      f.calls
+        .filter((call) => call.cmd === process.execPath)
+        .every((call) => JSON.parse(call.input!).ci.runId === 1),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("changing environment or database target during plan confirmation blocks all writes", async () => {
+  for (const change of [
+    "environment",
+    "database",
+    "repository",
+    "declaration",
+  ]) {
+    const f = await fixture();
+    let confirmations = 0,
+      migrated = false;
+    f.ctx.ui.confirm = async () => {
+      if (++confirmations === 2) {
+        if (change === "environment") f.ctx.env = "production";
+        if (change === "database")
+          f.ctx.data.profiles[JSON.stringify(["fixture", "staging"])] = {
+            supabaseProjectRef: "x".repeat(20),
+          };
+        if (change === "repository") f.ctx.config.repository = "other/fixture";
+        if (change === "declaration")
+          f.ctx.config.release!.ciWorkflow = "other.yml";
+      }
+      return true;
+    };
+    try {
+      const result = await runRelease(f.ctx, "app", undefined, {
+        migrate: async () => {
+          migrated = true;
+          return undefined;
+        },
+      });
+      assert.equal(result.state, "failed");
+      assert.equal(migrated, false);
+      assert.equal(f.calls.filter((c) => c.cmd === process.execPath).length, 1);
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("CI expiry or failure during SQL confirmation blocks the pre-apply boundary without claiming a database write", async () => {
+  const { CommandExecutionError } = await import("../src/process.ts");
+  for (const scenario of ["expired", "failed"] as const) {
+    const f = await fixture();
+    let now = 0,
+      reads = 0,
+      writes = 0;
+    const logs: string[] = [];
+    f.ctx.config.release!.ciTransientFallback = {
+      environments: ["staging"],
+      maxAgeSeconds: 300,
+    };
+    f.ctx.ui.log = (message) => logs.push(message);
+    const runner = f.ctx.runner;
+    f.ctx.runner = async (command, args, options) => {
+      if (command === "gh" && reads++ >= 2) {
+        if (scenario === "expired")
+          throw new CommandExecutionError("gh", 1, {
+            httpStatus: 429,
+            retryAfterSeconds: 60,
+          });
+        const body = JSON.parse(await runner(command, args, options));
+        body.workflow_runs[0].conclusion = "failure";
+        return JSON.stringify(body);
+      }
+      return runner(command, args, options);
+    };
+    f.ctx.ui.confirm = async (message) => {
+      if (message === "fixture SQL confirmation") now = 301_000;
+      return true;
+    };
+    try {
+      const result = await runRelease(f.ctx, "app", undefined, {
+        ciNow: () => now,
+        ciSleep: async () => {},
+        migrate: async (ctx, _commit, beforeApply) => {
+          await ctx.ui.confirm("fixture SQL confirmation");
+          assert.equal(typeof beforeApply, "function");
+          await beforeApply!();
+          writes++;
+          return {
+            state: "applied",
+            ref: "b".repeat(20),
+            files: ["1_fixture.sql"],
+          };
+        },
+      });
+      assert.equal(result.state, "failed");
+      assert.equal(result.phase, "pre-migration-check");
+      assert.equal(result.database, "not-run");
+      assert.equal(writes, 0);
+      assert.ok(!logs.some((line) => line.includes("数据库可能已有变更")));
+      assert.equal(
+        f.calls.filter((call) => call.cmd === process.execPath).length,
+        1,
+      );
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("CI fallback confirmation cannot hide changed source or expiry during the final source check", async () => {
+  const { CommandExecutionError } = await import("../src/process.ts");
+  for (const scenario of ["source", "expiry"]) {
+    const f = await fixture();
+    let reads = 0,
+      confirmed = false,
+      now = 0,
+      migrated = false;
+    f.ctx.config.release!.ciTransientFallback = {
+      environments: ["staging"],
+      maxAgeSeconds: 300,
+    };
+    const runner = f.ctx.runner;
+    f.ctx.runner = async (command, args, options) => {
+      if (command === "gh" && reads++ > 0)
+        throw new CommandExecutionError("gh", 1, {
+          httpStatus: 429,
+          retryAfterSeconds: 60,
+        });
+      if (command === "git" && confirmed) {
+        if (scenario === "expiry") now = 301_000;
+        else if (args.includes("rev-parse")) return "b".repeat(40);
+      }
+      return runner(command, args, options);
+    };
+    f.ctx.ui.confirm = async (message) => {
+      if (message.includes("GitHub 暂时")) confirmed = true;
+      return true;
+    };
+    try {
+      const result = await runRelease(f.ctx, "app", undefined, {
+        ciNow: () => now,
+        ciSleep: async () => {},
+        migrate: async () => {
+          migrated = true;
+          return undefined;
+        },
+      });
+      assert.equal(result.state, "failed");
+      assert.equal(migrated, false);
+    } finally {
+      await f.close();
+    }
+  }
+});

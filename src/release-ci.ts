@@ -1,9 +1,36 @@
-import { run, type Runner } from "./process.ts";
+import { CommandExecutionError, run, type Runner } from "./process.ts";
+import { githubReadBody } from "./github-read.ts";
+
+export type ReleaseCiReason =
+  | "rate-limited"
+  | "service-unavailable"
+  | "timeout"
+  | "unauthorized"
+  | "forbidden"
+  | "not-found"
+  | "malformed"
+  | "unavailable";
+export type ReleaseCiTransientReason = Extract<
+  ReleaseCiReason,
+  "rate-limited" | "service-unavailable" | "timeout"
+>;
+export function transientCiReason(
+  reason?: ReleaseCiReason,
+): reason is ReleaseCiTransientReason {
+  return (
+    reason === "rate-limited" ||
+    reason === "service-unavailable" ||
+    reason === "timeout"
+  );
+}
 
 export type ReleaseCiEvidence = {
   state: "passed" | "pending" | "failed" | "missing" | "unknown";
   sha: string;
   runId?: number;
+  runAttempt?: number;
+  reason?: ReleaseCiReason;
+  retryAfterSeconds?: number;
   url?: string;
   branch?: string;
 };
@@ -13,6 +40,8 @@ export type ReleaseCiOptions = {
   workflow: string;
   sha: string;
   runner?: Runner;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
 };
 
 type RunRecord = {
@@ -59,7 +88,7 @@ function runRecord(
     entry.head_sha !== options.sha ||
     !positive(entry.id) ||
     !positive(entry.run_number) ||
-    (entry.run_attempt !== undefined && !positive(entry.run_attempt)) ||
+    !positive(entry.run_attempt) ||
     typeof entry.created_at !== "string" ||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(
       entry.created_at,
@@ -109,7 +138,7 @@ function runRecord(
     id: entry.id,
     created: Date.parse(entry.created_at),
     number: entry.run_number,
-    attempt: (entry.run_attempt as number | undefined) ?? 1,
+    attempt: entry.run_attempt,
     ...(positive(entry.workflow_id) ? { workflowId: entry.workflow_id } : {}),
     state,
     ...(branch ? { branch } : {}),
@@ -135,17 +164,74 @@ export async function readReleaseCi(
     state,
     sha,
   });
+  let raw: string | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      raw = await (options.runner ?? run)(
+        "gh",
+        [
+          "api",
+          "--hostname",
+          "github.com",
+          "--method",
+          "GET",
+          "--include",
+          `repos/${options.repository}/actions/workflows/${options.workflow}/runs?head_sha=${sha}&per_page=100&page=1`,
+        ],
+        { timeout: 15_000 },
+      );
+      break;
+    } catch (error) {
+      let reason: ReleaseCiReason = "unavailable";
+      let retryAfterSeconds: number | undefined;
+      if (error instanceof CommandExecutionError) {
+        retryAfterSeconds = error.retryAfterSeconds;
+        // A timer never overrides a received denial or an unverified partial response.
+        if (error.httpStatus === 401) reason = "unauthorized";
+        else if (error.httpStatus === 403 && !error.rateLimited)
+          reason = "forbidden";
+        else if (error.httpStatus === 404) reason = "not-found";
+        else if (
+          error.outputTruncated ||
+          (error.responseStarted && error.httpStatus === undefined)
+        )
+          reason = "malformed";
+        else if (
+          error.httpStatus === 429 ||
+          (error.httpStatus === 403 && error.rateLimited)
+        )
+          reason = "rate-limited";
+        else if (error.httpStatus !== undefined && error.httpStatus >= 500)
+          reason = "service-unavailable";
+        else if (error.httpStatus !== undefined) reason = "malformed";
+        else if (error.timedOut && !error.responseStarted) reason = "timeout";
+      }
+      // GitHub requires at least a minute for rate limits without a usable reset hint.
+      if (reason === "rate-limited" && retryAfterSeconds === undefined)
+        retryAfterSeconds = 60;
+      const failure: ReleaseCiEvidence = {
+        ...result("unknown"),
+        reason,
+        ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+      };
+      if (
+        !transientCiReason(reason) ||
+        attempt === 2 ||
+        (retryAfterSeconds ?? 0) > 5
+      )
+        return failure;
+      const delay = Math.max(
+        1000 * (attempt + 1),
+        (retryAfterSeconds ?? 0) * 1000,
+      );
+      await (
+        options.sleep ??
+        ((ms) => new Promise<void>((done) => setTimeout(done, ms)))
+      )(delay);
+    }
+  }
   try {
-    const response: unknown = JSON.parse(
-      await (options.runner ?? run)("gh", [
-        "api",
-        "--hostname",
-        "github.com",
-        "--method",
-        "GET",
-        `repos/${options.repository}/actions/workflows/${options.workflow}/runs?head_sha=${sha}&per_page=100&page=1`,
-      ]),
-    );
+    const response: unknown = JSON.parse(githubReadBody(raw ?? ""));
     const body = object(response);
     if (
       !body ||
@@ -155,19 +241,20 @@ export async function readReleaseCi(
       body.total_count !== body.workflow_runs.length ||
       body.workflow_runs.length > 100
     )
-      return result("unknown");
+      return { ...result("unknown"), reason: "malformed" };
     if (!body.workflow_runs.length) return result("missing");
     const records = body.workflow_runs.map((entry: unknown) =>
       runRecord(entry, { ...options, sha }),
     );
-    if (records.some((entry) => !entry)) return result("unknown");
+    if (records.some((entry) => !entry))
+      return { ...result("unknown"), reason: "malformed" };
     const runs = records as RunRecord[];
     const ids = new Set(
       runs.flatMap((entry) =>
         entry.workflowId === undefined ? [] : [entry.workflowId],
       ),
     );
-    if (ids.size > 1) return result("unknown");
+    if (ids.size > 1) return { ...result("unknown"), reason: "malformed" };
     runs.sort(
       (left, right) =>
         right.created - left.created ||
@@ -185,15 +272,16 @@ export async function readReleaseCi(
           (entry.id !== latest.id || entry.state !== latest.state),
       )
     )
-      return result("unknown");
+      return { ...result("unknown"), reason: "malformed" };
     return {
       ...result(latest.state),
       runId: latest.id,
+      runAttempt: latest.attempt,
       url: `https://github.com/${options.repository}/actions/runs/${latest.id}`,
       ...(latest.branch ? { branch: latest.branch } : {}),
     };
   } catch {
-    return result("unknown");
+    return { ...result("unknown"), reason: "malformed" };
   }
 }
 
@@ -203,7 +291,7 @@ export async function assertReleaseCi(
   const evidence = await readReleaseCi(options);
   if (evidence.state !== "passed")
     throw new Error(
-      "CI 尚未确认目标提交的最新工作流成功；请完成可信的同仓库 CI 后重新核验。",
+      `CI 尚未确认目标提交的最新工作流成功（${evidence.reason ?? evidence.state}）${evidence.retryAfterSeconds ? `；服务要求至少等待 ${evidence.retryAfterSeconds} 秒` : ""}；请重新核验。`,
     );
   return { ...evidence, state: "passed" };
 }

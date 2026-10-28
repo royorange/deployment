@@ -292,3 +292,15 @@ test("void or mismatched receipts never become success or pollute completed rece
     assert.deepEqual(result.receipts, []);
   }
 });
+
+test("explicit project order supports a Pages-first composite topology", async () => {
+  const f = await fixture(["all", "device:test-host"]);
+  f.ctx.config.release!.order = ["pages", "app"];
+  const result = await runReleaseFlow(
+    f.ctx,
+    { store: f.store },
+    { run: f.execute },
+  );
+  assert.equal(result.state, "health-checked");
+  assert.deepEqual(f.calls, ["pages", "app"]);
+});
