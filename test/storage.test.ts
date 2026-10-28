@@ -132,6 +132,54 @@ test("vault storage restores all manually supplied service credentials and secre
   }
 });
 
+test("six-character vault passphrases create encrypted storage and unlock without changing existing files on failure", async () => {
+  const base = await temporary();
+  const password = "s3cret";
+  const secret = "fixture-six-character-vault-token";
+  try {
+    const initial = prompts([password, password]);
+    const first = await openStorage({
+      base,
+      root,
+      config,
+      mode: "vault",
+      ui: initial.ui,
+    });
+    assert.ok(initial.calls.includes("新建保险库口令（至少 6 字符）"));
+    first.data.credentials["cloudflare/manual"] = secret;
+    await first.save();
+    first.close();
+    const path = join(base, "project-setup", "vault.json");
+    const encrypted = await readFile(path, "utf8");
+    assert.ok(!encrypted.includes(secret));
+    assert.ok(!encrypted.includes(password));
+    assert.ok(!initial.calls.join("\n").includes(password));
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    await assert.rejects(
+      openStorage({
+        base,
+        root,
+        config,
+        mode: "vault",
+        ui: prompts(["wr0ng!"]).ui,
+      }),
+      /解锁失败/,
+    );
+    assert.equal(await readFile(path, "utf8"), encrypted);
+    const reopened = await openStorage({
+      base,
+      root,
+      config,
+      mode: "vault",
+      ui: prompts([password]).ui,
+    });
+    assert.equal(reopened.data.credentials["cloudflare/manual"], secret);
+    reopened.close();
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test("new vault is not written before save and mismatched or short passphrases do not create it", async () => {
   for (const answers of [
     [passphrase, "different passphrase"],

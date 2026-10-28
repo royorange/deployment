@@ -12,7 +12,7 @@ import {
   exportTunnelToken,
 } from "../src/deployment-wizard.ts";
 import type { Context } from "../src/wizard.ts";
-import { CloudflareTunnels } from "../src/tunnels.ts";
+import { CloudflareTunnels, mergeTunnelIngress } from "../src/tunnels.ts";
 
 const account = "a".repeat(32),
   zone = "b".repeat(32);
@@ -83,10 +83,10 @@ test("Tunnel setup previews its own environment before creating any remote resou
       throw new Error("unexpected write");
     },
   } as unknown as CloudflareTunnels;
-  await configureTunnel(ctx, client);
+  assert.deepEqual(await configureTunnel(ctx, client), { status: "cancelled" });
   assert.equal(writes, 0);
   assert.match(logs.join("\n"), /fixture-staging/);
-  assert.match(logs.join("\n"), /http:\/\/app:3000/);
+  assert.match(logs.join("\n"), /http:\/\/fixture-staging:3000/);
 });
 test("Tunnel setup preserves existing routes and stores token without displaying it", async () => {
   const { ctx, logs } = fixture();
@@ -118,6 +118,7 @@ test("Tunnel setup preserves existing routes and stores token without displaying
     configuration: async () => original,
     dnsRecords: async () => [],
     updateIngress: async (...args: unknown[]) => {
+      assert.equal(args[4], "http://fixture-staging:3000");
       assert.deepEqual(args[5], original);
       writes.push("ingress");
     },
@@ -134,6 +135,120 @@ test("Tunnel setup preserves existing routes and stores token without displaying
     "fixture-sensitive-tunnel-token",
   );
   assert.ok(!logs.join("\n").includes("fixture-sensitive-tunnel-token"));
+});
+test("a validated project beginning with a digit uses its matching container alias", async () => {
+  const { ctx, logs } = fixture();
+  ctx.config.project = "1fixture";
+  ctx.data.profiles[projectKey("1fixture", "staging")] = {
+    cloudflareAccountId: account,
+  };
+  ctx.ui.confirm = async () => true;
+  let writes = 0;
+  const client = {
+    zones: async () => [
+      {
+        id: zone,
+        name: "example.test",
+        status: "active",
+        account: { id: account },
+      },
+    ],
+    tunnels: async () => [{ id: tunnel, name: "1fixture-staging" }],
+    configuration: async () => ({ ingress: [{ service: "http_status:404" }] }),
+    dnsRecords: async () => [],
+    updateIngress: async (
+      _account: string,
+      _tunnel: string,
+      _zone: string,
+      hostname: string,
+      service: string,
+    ) => {
+      assert.equal(service, "http://1fixture-staging:3000");
+      mergeTunnelIngress({}, hostname, service);
+      writes++;
+    },
+    ensureDns: async () => "existing",
+    token: async () => "synthetic-token",
+  } as unknown as CloudflareTunnels;
+  await configureTunnel(ctx, client);
+  assert.equal(writes, 1);
+  assert.ok(logs.some((line) => line.includes("http://1fixture-staging:3000")));
+});
+test("Tunnel upstream derives a distinct validated project-environment alias and migrates old app routes only after confirmation", async () => {
+  for (const env of ["staging", "production"]) {
+    for (const approved of [true, false]) {
+      const { ctx, logs } = fixture();
+      ctx.env = env;
+      ctx.config.environments = ["staging", "production"];
+      ctx.data.profiles[projectKey("fixture", env)] = {
+        cloudflareAccountId: account,
+      };
+      const hostname =
+        env === "production" ? "app.example.test" : "app-staging.example.test";
+      const original = {
+        ingress: [
+          { hostname: "other.example.test", service: "http://other:3000" },
+          {
+            hostname,
+            service: "http://app:3000",
+            originRequest: { connectTimeout: 10 },
+          },
+          { service: "http_status:404" },
+        ],
+      };
+      const snapshot = structuredClone(original);
+      const writes: string[] = [];
+      const confirmations: string[] = [];
+      ctx.ui.confirm = async (message) => {
+        confirmations.push(message);
+        return approved;
+      };
+      const client = {
+        zones: async () => [
+          {
+            id: zone,
+            name: "example.test",
+            status: "active",
+            account: { id: account },
+          },
+        ],
+        tunnels: async () => [{ id: tunnel, name: `fixture-${env}` }],
+        configuration: async () => original,
+        dnsRecords: async () => [],
+        updateIngress: async (
+          _account: string,
+          _tunnel: string,
+          _zone: string,
+          host: string,
+          service: string,
+          configuration: typeof original,
+        ) => {
+          assert.equal(service, `http://fixture-${env}:3000`);
+          const planned = mergeTunnelIngress(configuration, host, service);
+          assert.deepEqual(planned.ingress, [
+            original.ingress[0],
+            { ...original.ingress[1], service },
+            original.ingress[2],
+          ]);
+          writes.push("ingress");
+        },
+        ensureDns: async () => {
+          writes.push("dns");
+          return "created";
+        },
+        token: async () => "synthetic-token",
+      } as unknown as CloudflareTunnels;
+      await configureTunnel(ctx, client);
+      assert.deepEqual(writes, approved ? ["ingress", "dns"] : []);
+      assert.deepEqual(original, snapshot);
+      assert.ok(
+        logs.some((line) => line.includes(`http://fixture-${env}:3000`)),
+      );
+      assert.ok(confirmations[0]!.includes("http://app:3000"));
+      assert.ok(confirmations[0]!.includes(`http://fixture-${env}:3000`));
+      assert.ok(confirmations[0]!.includes("别名"));
+    }
+  }
 });
 test("deployment plan output never prints a stored tunnel token or cleanup key", async () => {
   const { ctx, logs } = fixture();

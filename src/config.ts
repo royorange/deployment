@@ -1,3 +1,4 @@
+import { validateRelease, type ReleaseConfig } from "./release-config.ts";
 import { singleLine, variableName } from "./files.ts";
 import type { Values } from "./vault.ts";
 import { validateSetup, type SetupConfig } from "./setup-config.ts";
@@ -89,6 +90,7 @@ export type Config = {
   deploymentTopology?: "aws-tunnel" | "worker-private-origin";
   migrationStrategy?: "supabase-cli" | "project-managed";
   setup?: SetupConfig;
+  release?: ReleaseConfig;
   environments: string[];
   variables: Record<string, string>;
   defaults?: Record<string, Values>;
@@ -287,6 +289,7 @@ export function validateConfig(input: unknown): Config {
       throw new Error("JSON 导出仅支持公开配置字段。");
   }
   validateSetup(config, definitions);
+  validateRelease(config, definitions);
   return config;
 }
 

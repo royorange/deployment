@@ -105,8 +105,8 @@
   },
   "envExports": [
     {
-      "label": "当前环境公开入口与 Pages 资源",
-      "path": ".project-setup/{environment}/public.env",
+      "label": "统一项目配置（可选）",
+      "path": ".project-setup/{environment}/.env",
       "fields": [
         "cloudflareAccountId",
         "pagesProject",

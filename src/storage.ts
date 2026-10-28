@@ -2,7 +2,12 @@ import { join } from "node:path";
 import { projectKey, type Config } from "./config.ts";
 import { readPrivate } from "./files.ts";
 import { legacyVaultProfileKey, StateStore, vaultProfileKey } from "./state.ts";
-import { Vault, type Values, type VaultData } from "./vault.ts";
+import {
+  MIN_VAULT_PASSPHRASE_LENGTH,
+  Vault,
+  type Values,
+  type VaultData,
+} from "./vault.ts";
 import type { UI } from "./wizard.ts";
 
 export type StorageMode = "vault" | "metadata" | "memory";
@@ -28,12 +33,16 @@ async function unlockVault({ base, ui }: StorageOptions): Promise<Vault> {
     `本机保险库：${path}。scrypt + AES-256-GCM；忘记口令无法恢复。口令不会保存。`,
   );
   const passphrase = await ui.input(
-    exists ? "解锁保险库口令" : "新建保险库口令（至少 12 字符）",
+    exists
+      ? "解锁保险库口令"
+      : `新建保险库口令（至少 ${MIN_VAULT_PASSPHRASE_LENGTH} 字符）`,
     { secret: true },
   );
   if (!exists) {
-    if (passphrase.length < 12)
-      throw new Error("保险库口令至少 12 个字符，未创建保险库。");
+    if (passphrase.length < MIN_VAULT_PASSPHRASE_LENGTH)
+      throw new Error(
+        `保险库口令至少 ${MIN_VAULT_PASSPHRASE_LENGTH} 个字符，未创建保险库。`,
+      );
     if (passphrase !== (await ui.input("再次输入保险库口令", { secret: true })))
       throw new Error("两次口令不一致，未创建保险库。");
   }

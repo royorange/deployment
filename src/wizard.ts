@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   allFields,
   name as resourceName,
@@ -9,6 +10,7 @@ import {
   type Entry,
 } from "./config.ts";
 import { mergeEnv, parseEnv, readPrivate, writePrivate } from "./files.ts";
+import { resolveEnvConflicts, unifiedEnvPath } from "./unified-env.ts";
 import { ApiError, Cloudflare, Supabase, supabaseHealth } from "./providers.ts";
 import {
   CommandUnavailableError,
@@ -36,6 +38,8 @@ import {
   showDeploymentPlan,
   checkDeploymentHost,
   exportTunnelToken,
+  type GuideOperationResult,
+  verifyGuideTunnelConfiguration,
 } from "./deployment-wizard.ts";
 import type { Values, VaultData } from "./vault.ts";
 import {
@@ -57,6 +61,8 @@ type Runtime = {
   statuses: Record<string, LoginStatus>;
   officialCloudflareToken?: string;
   transientSupabaseToken?: string;
+  transientSupabaseDatabasePassword?: string;
+  supabaseDatabasePassword?: { scope: string; password: string };
   pagesEvidence?: Record<string, PagesEvidence[]>;
   githubEnvironment?: Record<
     string,
@@ -92,6 +98,8 @@ export type Context = {
   runner: Runner;
   fetcher?: typeof fetch;
   ensureSupabaseCli?: () => Promise<boolean>;
+  deviceDirectory?: string;
+  releaseDirectory?: string;
   save: () => Promise<void>;
   storageMode?: "metadata" | "memory" | "vault";
   vaultReferences?: Record<string, Values>;
@@ -104,14 +112,14 @@ function status(ctx: Context, provider: string, info: LoginStatus): void {
   runtime(ctx).statuses[`${ctx.env}/${provider}`] = info;
 }
 class ConnectionCancelled extends Error {}
-async function connection(
+async function connection<T>(
   ctx: Context,
-  action: (ctx: Context) => Promise<void>,
-): Promise<void> {
+  action: (ctx: Context) => Promise<T>,
+): Promise<T | GuideOperationResult> {
   const before = structuredClone(ctx.data);
   const beforeRuntime = structuredClone(runtime(ctx));
   try {
-    await action(ctx);
+    return await action(ctx);
   } catch (error) {
     const message = safeMessage(error, ctx);
     ctx.data.credentials = before.credentials;
@@ -122,9 +130,13 @@ async function connection(
       error instanceof SupabaseTokenCancelled
     ) {
       ctx.ui.log("已取消切换，原账号与项目绑定保持不变。");
-      return;
+      return { status: "cancelled" };
     }
-    if (error instanceof Error && error.name === "ExitPromptError") throw error;
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
     // Provider causes can contain credentials; retain only the redacted message.
     // eslint-disable-next-line preserve-caught-error
     throw new Error(message);
@@ -134,11 +146,29 @@ export function values(ctx: Context): Values {
   const key = projectKey(ctx.config.project, ctx.env);
   return (ctx.data.profiles[key] ??= { ...ctx.config.defaults?.[ctx.env] });
 }
+function secretForms(value: string): string[] {
+  const json = JSON.stringify(value).slice(1, -1);
+  const forms = [value, json, json.replaceAll("/", "\\/")];
+  const url = new URL("https://example.invalid");
+  url.password = value;
+  forms.push(url.password);
+  try {
+    forms.push(encodeURIComponent(value), encodeURI(value));
+  } catch {
+    // Lone UTF-16 surrogates have no URI encoding; raw and JSON forms still apply.
+  }
+  return forms.flatMap((form) => [
+    form,
+    form.replace(/%[A-F0-9]{2}/g, (part) => part.toLowerCase()),
+  ]);
+}
 export function safeMessage(error: unknown, ctx?: Context): string {
   let message = error instanceof Error ? error.message : "操作失败。";
   const secrets = [
     ctx?.runtime?.officialCloudflareToken,
     ctx?.runtime?.transientSupabaseToken,
+    ctx?.runtime?.transientSupabaseDatabasePassword,
+    ctx?.runtime?.supabaseDatabasePassword?.password,
     ...Object.values(ctx?.data.credentials ?? {}),
     ...Object.values(ctx?.data.profiles ?? {}).flatMap((profile) =>
       Object.entries(profile)
@@ -146,8 +176,13 @@ export function safeMessage(error: unknown, ctx?: Context): string {
         .map(([, value]) => value),
     ),
   ];
-  for (const value of secrets)
-    if (value) message = message.split(value).join("[已隐藏]");
+  const forms = new Set(
+    secrets.flatMap((value) => (value ? secretForms(value) : [])),
+  );
+  for (const form of [...forms]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length))
+    message = message.split(form).join("[已隐藏]");
   return message.replace(/[\x00-\x1f\x7f\x9b]/g, " ").slice(0, 1000);
 }
 function display(value: string): string {
@@ -386,7 +421,7 @@ async function credential(
       else {
         ctx.ui.log(
           options.purpose === "tunnel"
-            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。"
+            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。请在稍后出现的“隐藏输入”框中粘贴；当前的说明、浏览器确认和 Shell 提示符都不是 Token 输入框。"
             : "API Token：指定账号的 Cloudflare Pages Edit + Workers Scripts Edit；自动列出账号另需 Account Settings Read，也可手填 Account ID。",
         );
         await browser(ctx, "https://dash.cloudflare.com/profile/api-tokens");
@@ -448,20 +483,153 @@ async function cloudflareToken(ctx: Context): Promise<string> {
 async function cloudflareClient(ctx: Context): Promise<Cloudflare> {
   return new Cloudflare(await cloudflareToken(ctx), ctx.fetcher);
 }
-async function tunnelClient(ctx: Context): Promise<CloudflareTunnels> {
-  const alias = values(ctx)["@cloudflareTunnelManagement"];
+/** Check saved bindings only; never acquire a new credential or create a resource. */
+export async function verifyGuideCloudflare(
+  ctx: Context,
+): Promise<GuideOperationResult> {
+  const configured = values(ctx);
+  const alias = configured["@cloudflare"];
+  if (
+    !configured.cloudflareAccountId ||
+    !configured.pagesProject ||
+    (configured["@cloudflareSource"] !== "wrangler" &&
+      (!alias || !ctx.data.credentials[alias]))
+  )
+    return {
+      status: "configured",
+      message:
+        "请先绑定 Cloudflare 账号并载入相应登录凭据、选择 Pages 项目；未读取其他来源凭据。",
+    };
+  let client: Cloudflare;
+  try {
+    client = await cloudflareClient(ctx);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    // Provider failures can contain credentials; retain only static diagnostic context.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      "Cloudflare 凭据读取或身份、账号归属核验失败；请先重新只读核验。若持续失败，再修复已绑定的官方 Wrangler 登录或账号 Token。未读取其他来源凭据，未修改资源。",
+    );
+  }
+  try {
+    const project = await client.pagesProject(
+      configured.cloudflareAccountId,
+      configured.pagesProject,
+    );
+    if (!project)
+      return {
+        status: "configured",
+        message: "绑定的 Pages 项目不存在；请重新选择或在配置步骤明确创建。",
+      };
+    if (project.name !== configured.pagesProject)
+      throw new Error("resource-mismatch");
+    return { status: "verified" };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    const detail =
+      error instanceof ApiError
+        ? `Pages 读取失败（HTTP ${error.status}）；${error.status === 401 ? "凭据已失效，请检查当前绑定的登录。" : error.status === 403 ? "请检查目标账号和 Pages 项目的读取权限与资源范围。" : error.status === 429 ? "请求受限，请稍后重新只读核验。" : "请稍后重试或检查服务状态。"}`
+        : "Pages 读取或响应校验失败；请重新只读核验，并检查网络、代理与项目绑定。";
+    // Do not attach a raw provider cause that could contain credentials or response data.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      `Cloudflare ${detail} 未创建或更改资源，不需要因此重新创建 Tunnel。`,
+    );
+  }
+}
+export async function verifyGuideTunnel(
+  ctx: Context,
+): Promise<GuideOperationResult> {
+  const configured = values(ctx);
+  const alias = configured["@cloudflareTunnelManagement"];
+  const token = alias && ctx.data.credentials[alias];
+  if (
+    !token ||
+    !configured.cloudflareAccountId ||
+    !configured.cloudflareZoneId ||
+    !configured.cloudflareTunnelId ||
+    !configured.appOrigin ||
+    !configured.cloudflareTunnelToken
+  )
+    return {
+      status: "configured",
+      message:
+        "请先绑定专用 Tunnel 管理凭据并配置 Zone、Tunnel、应用 Origin 和连接 Token；未复用其他登录或读取新 Token。",
+    };
+  try {
+    return await verifyGuideTunnelConfiguration(
+      ctx,
+      new CloudflareTunnels(token, ctx.fetcher),
+    );
+  } catch {
+    return {
+      status: "configured",
+      message: "专用 Tunnel 管理凭据未通过只读检查；未读取其他凭据或修改资源。",
+    };
+  }
+}
+async function tunnelClient(
+  ctx: Context,
+): Promise<CloudflareTunnels | undefined> {
+  let alias = values(ctx)["@cloudflareTunnelManagement"];
+  if (!alias) {
+    const source = await ctx.ui.select(
+      "此环境未绑定专用 Tunnel 管理 Token；请选择本次凭据来源（这里不是 Token 输入框）",
+      [
+        {
+          name: "配置专用 Tunnel 管理 Token（推荐；保留账号与 CI 绑定）",
+          value: "dedicated",
+        },
+        {
+          name: "明确复用当前 Cloudflare 登录（需 Tunnel/Zone/DNS 权限）",
+          value: "existing",
+        },
+        { name: "返回，不读取凭据或修改资源", value: "back" },
+      ],
+    );
+    if (source === "back") return;
+    if (source === "dedicated") {
+      await connection(ctx, tunnelManagementCredential);
+      alias = values(ctx)["@cloudflareTunnelManagement"];
+      if (!alias) return;
+    }
+  }
   if (alias) {
     const token = ctx.data.credentials[alias];
     if (!token)
       throw new Error(
-        "请解锁保险库或重新配置 Tunnel 管理 Token；不会改用其他凭据。",
+        "请解锁保险库，或进入“部署与发布 → 创建或配置 Tunnel → 配置专用 Tunnel 管理 Token”重新配置；不会改用其他凭据。仅在“隐藏输入”框中粘贴 Token。",
       );
+    ctx.ui.log(
+      "本次使用已绑定的专用 Tunnel 管理 Token；账号登录与 CI 部署 Token 绑定保持不变。令牌值不显示。",
+    );
     return new CloudflareTunnels(token, ctx.fetcher);
   }
   ctx.ui.log(
-    "将使用现有 Cloudflare 登录。若 DNS 返回 403，请配置专用 Tunnel 管理 API Token（Tunnel Edit、Zone Read、DNS Edit）。",
+    "已明确选择复用当前 Cloudflare 登录，正在读取并验证现有凭据；此处没有 Token 输入框。若需粘贴新 Token，请返回选择“配置专用 Tunnel 管理 Token”，仅在隐藏输入框中输入。",
   );
-  return new CloudflareTunnels(await cloudflareToken(ctx), ctx.fetcher);
+  try {
+    return new CloudflareTunnels(await cloudflareToken(ctx), ctx.fetcher);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      throw error;
+    // Official errors may contain credentials; retain only the redacted diagnostic.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      `当前 Cloudflare 登录无法读取或验证，未执行 Tunnel/DNS 操作。请进入“部署与发布 → 创建或配置 Tunnel → 配置专用 Tunnel 管理 Token”，或修复官方 Wrangler 登录；仅在明确的“隐藏输入”框中粘贴 Token，此处不是输入框。诊断：${safeMessage(error, ctx).slice(0, 480)}`,
+    );
+  }
 }
 async function tunnelManagementCredential(ctx: Context): Promise<void> {
   const before = { ...values(ctx) };
@@ -1143,6 +1311,7 @@ async function selectSupabase(ctx: Context): Promise<void> {
     "supabasePublishableKey",
     key,
   );
+  delete runtime(ctx).supabaseDatabasePassword;
   status(ctx, "supabase", {
     state: "已验证",
     source:
@@ -1155,7 +1324,7 @@ async function selectSupabase(ctx: Context): Promise<void> {
     "已读取 URL 和 Publishable Key。Management API 可用不代表项目网关可用；暂停项目需先在控制台恢复。项目状态不能证明数据库迁移已执行或组织额度充足。",
   );
 }
-async function authOrigins(ctx: Context): Promise<void> {
+export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
   const ref = values(ctx).supabaseProjectRef;
   const origin = values(ctx).appOrigin;
   if (!ref || !origin)
@@ -1173,10 +1342,30 @@ async function authOrigins(ctx: Context): Promise<void> {
       ctx,
       `https://supabase.com/dashboard/project/${ref}/auth/url-configuration`,
     );
-    return;
+    return {
+      status: "manual",
+      message: "已提供官方配置页面；尚未读取并核验远端 Auth URL。",
+    };
   }
   const client = await supabaseClient(ctx);
   const old = await client.authOrigins(ref);
+  const callbacks = (value: string) =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (
+    typeof old.site_url !== "string" ||
+    typeof old.uri_allow_list !== "string"
+  )
+    throw new Error("Auth URL 配置读取结果不合法；未修改远端设置。");
+  if (
+    old.site_url === origin &&
+    callbacks(old.uri_allow_list).includes(`${origin}/**`)
+  ) {
+    ctx.ui.log("Auth Site URL 与所需回调已只读核验一致；未重复更新远端设置。");
+    return { status: "verified" };
+  }
   const allow = [
     ...new Set([
       ...old.uri_allow_list
@@ -1195,12 +1384,113 @@ async function authOrigins(ctx: Context): Promise<void> {
     )
   ) {
     await client.setAuthOrigins(ref, origin, allow);
-    ctx.ui.log("Auth URL 已更新。");
-  } else ctx.ui.log("已取消 Auth URL 更新，远端设置保持不变。");
+    try {
+      const checked = await client.authOrigins(ref);
+      if (
+        checked.site_url !== origin ||
+        typeof checked.uri_allow_list !== "string" ||
+        callbacks(allow).some(
+          (callback) => !callbacks(checked.uri_allow_list).includes(callback),
+        )
+      )
+        throw new Error("verification-mismatch");
+    } catch {
+      const message =
+        "Auth URL 更新请求已发送，但只读复查尚未确认 Site URL 与全部所需/原有回调一致；请重新检查，不能视为配置完成。";
+      ctx.ui.log(message);
+      return { status: "configured", message };
+    }
+    ctx.ui.log("Auth URL 已更新并只读核验一致。");
+    return { status: "verified" };
+  }
+  ctx.ui.log("已取消 Auth URL 更新，远端设置保持不变。");
+  return { status: "cancelled" };
 }
-async function migrations(ctx: Context): Promise<void> {
+export type MigrationReleaseResult = {
+  state: "applied" | "up-to-date";
+  ref: string;
+  files: string[];
+};
+export async function releaseMigrations(
+  ctx: Context,
+  expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
+): Promise<MigrationReleaseResult | undefined> {
+  try {
+    return await migrations(ctx, true, expectedCommit, beforeApply);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    ) {
+      ctx.ui.log("已取消迁移发布步骤；不会继续发布应用。");
+      return;
+    }
+    throw error;
+  }
+}
+async function migrations(
+  ctx: Context,
+  release = false,
+  expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
+): Promise<MigrationReleaseResult | undefined> {
+  try {
+    return await migrationAttempt(ctx, release, expectedCommit, beforeApply);
+  } catch (error) {
+    // Redact both the current candidate and the verified password before clearing them.
+    const message = safeMessage(error, ctx);
+    delete runtime(ctx).supabaseDatabasePassword;
+    // Raw CLI/provider causes may contain database credentials.
+    const sanitized = new Error(message);
+    if (
+      error instanceof Error &&
+      ["ExitPromptError", "AbortPromptError"].includes(error.name)
+    )
+      sanitized.name = error.name;
+    throw sanitized;
+  } finally {
+    delete runtime(ctx).transientSupabaseDatabasePassword;
+  }
+}
+async function migrationAttempt(
+  ctx: Context,
+  release = false,
+  expectedCommit?: string,
+  beforeApply?: () => Promise<void>,
+): Promise<MigrationReleaseResult | undefined> {
   const ref = values(ctx).supabaseProjectRef;
   if (!ref) throw new Error("请先选择 Supabase 项目。");
+  const target = `${ctx.config.project}/${ctx.env}`;
+  const production = ctx.env === "production";
+  const binding = () =>
+    JSON.stringify([
+      ctx.root,
+      ctx.config.project,
+      ctx.env,
+      ctx.config.migrationStrategy,
+      ...[
+        "supabaseProjectRef",
+        "supabaseUrl",
+        "@supabaseSource",
+        "@supabaseProfile",
+        "@supabaseIdentity",
+        "@supabaseIdentityMode",
+        "@supabaseOrganization",
+        "@supabase",
+      ].map((key) => values(ctx)[key]),
+      activeCredential(ctx, "supabase"),
+    ]);
+  const initialBinding = binding();
+  const scope = createHash("sha256").update(initialBinding).digest("hex");
+  if (runtime(ctx).supabaseDatabasePassword?.scope !== scope)
+    delete runtime(ctx).supabaseDatabasePassword;
+  const assertTarget = () => {
+    if (binding() !== initialBinding)
+      throw new Error(
+        "迁移目标或账号绑定已变化；请重新预演并确认，未继续应用。",
+      );
+  };
   if (ctx.config.migrationStrategy !== "supabase-cli")
     throw new Error(
       ctx.config.migrationStrategy === "project-managed"
@@ -1208,6 +1498,7 @@ async function migrations(ctx: Context): Promise<void> {
         : "项目映射尚未明确 migrationStrategy；请先按项目既有账本声明策略，再运行迁移。未安装 CLI 或连接数据库。",
     );
   if (ctx.ensureSupabaseCli && !(await ctx.ensureSupabaseCli())) {
+    delete runtime(ctx).supabaseDatabasePassword;
     ctx.ui.log("已取消迁移，未请求数据库密码或连接数据库。");
     return;
   }
@@ -1223,23 +1514,39 @@ async function migrations(ctx: Context): Promise<void> {
     !official && values(ctx)["@supabaseIdentityMode"] === "resource"
       ? values(ctx)["@supabaseOrganization"]
       : undefined;
-  const verifyResource = resourceOrganization
-    ? async () => {
-        const project = await new Supabase(token!, ctx.fetcher).project(ref);
-        if (project.organization_id !== resourceOrganization)
-          throw new Error("迁移目标项目组织与绑定不同；未执行数据库操作。");
-      }
-    : undefined;
-  const password = await ctx.ui.input(
-    "数据库密码（仅本次内存使用，不保存、不导出）",
-    { secret: true },
-  );
-  if (!password || /[\r\n\x00]/.test(password))
-    throw new Error("数据库密码格式无效。");
+  const verifyResource = async () => {
+    assertTarget();
+    if (resourceOrganization) {
+      const project = await new Supabase(token!, ctx.fetcher).project(ref);
+      if (project.organization_id !== resourceOrganization)
+        throw new Error("迁移目标项目组织与绑定不同；未执行数据库操作。");
+    }
+    assertTarget();
+  };
+  const cached = runtime(ctx).supabaseDatabasePassword;
+  const password =
+    cached?.password ??
+    (await ctx.ui.input("数据库密码（验证后仅本次进程复用，不保存、不导出）", {
+      secret: true,
+    }));
+  runtime(ctx).transientSupabaseDatabasePassword = password;
+  if (cached)
+    ctx.ui.log(
+      "复用本次进程已验证的数据库密码；仍将重新核对目标身份和迁移账本。",
+    );
+  if (!password) {
+    ctx.ui.log("已取消迁移，未连接数据库。");
+    return;
+  }
+  if (/[\r\n\x00]/.test(password)) throw new Error("数据库密码格式无效。");
+  assertTarget();
   ctx.ui.log(
-    `目标：${ctx.config.project}/${ctx.env} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
+    `目标：${target} → ${ref}。官方 CLI 将使用独立临时目录，不改动本地 Supabase 链接。`,
   );
-  if (!(await ctx.ui.confirm("确认目标项目并执行数据库迁移预演？"))) return;
+  if (!release && !(await ctx.ui.confirm("确认目标项目并执行数据库迁移预演？")))
+    return;
+  assertTarget();
+  ctx.ui.log("正在只读核对官方 CLI 迁移账本；不会自动应用 SQL。");
   const session = await migrationSession(
     ctx.root,
     ref,
@@ -1253,25 +1560,68 @@ async function migrations(ctx: Context): Promise<void> {
         }
       : undefined,
     verifyResource,
+    expectedCommit,
+    async () => {
+      await beforeApply?.();
+      assertTarget();
+    },
   );
   try {
-    ctx.ui.log(`已冻结本地迁移快照：${session.files.join(", ")}`);
+    ctx.ui.log(
+      expectedCommit
+        ? `已从 CI 提交 ${expectedCommit} 冻结迁移快照：${session.files.join(", ")}`
+        : `已冻结本地迁移快照：${session.files.join(", ")}`,
+    );
     const pending = await session.preview();
+    assertTarget();
+    if (pending.length || session.upToDate)
+      runtime(ctx).supabaseDatabasePassword = { scope, password };
+    else delete runtime(ctx).supabaseDatabasePassword;
     ctx.ui.log(
       `CLI 预演成功，输出识别到的待执行文件：${pending.join(", ") || "无（未识别到文件名时请用官方 CLI 核对历史）"}。请审阅本地 SQL；工具不会自动判断其破坏性。`,
     );
     if (!pending.length) {
+      if (release && session.upToDate) {
+        ctx.ui.log("官方 CLI 已明确确认远端数据库迁移已是最新；无需重复应用。");
+        return { state: "up-to-date", ref, files: [] };
+      }
+      if (release)
+        throw new Error(
+          "无法确认数据库迁移状态：CLI 输出未识别到待执行文件，也未明确确认 up-to-date；已阻止后续应用发布，请按官方 CLI 核对账本。",
+        );
       ctx.ui.log("没有可审阅的待执行文件清单，本次不应用迁移。");
       return;
     }
-    if (ctx.env === "production")
+    ctx.ui.log(`迁移应用目标：${target}；Project Ref：${ref}。`);
+    if (production)
       ctx.ui.log("当前为 production；下面的确认会实际修改生产数据库。");
-    const answer = await ctx.ui.input(
-      `如需应用迁移，完整输入目标 Project Ref ${ref}；直接回车只保留预演`,
-    );
-    if (answer !== ref) {
+    const confirmed = production
+      ? (await ctx.ui.input(
+          `如需实际应用迁移，输入 ${target}；直接回车只保留预演`,
+        )) === target
+      : await ctx.ui.confirm(`实际应用以上迁移到 ${target} 的数据库？`);
+    assertTarget();
+    if (!confirmed) {
       ctx.ui.log("未执行迁移。");
       return;
+    }
+    if (release) {
+      try {
+        await session.apply();
+        await session.preview();
+        if (!session.upToDate) throw new Error("post-apply status unconfirmed");
+      } catch (error) {
+        if (!session.applyStarted) throw error;
+        // Raw CLI causes may include database credentials; keep only the controlled outcome.
+        // eslint-disable-next-line preserve-caught-error
+        throw new Error(
+          "迁移可能已应用，但应用后的复验未能明确确认 up-to-date；已阻止后续应用发布。未回滚数据库，也未执行 reset、repair 或 down，请核对远端迁移账本后重试。",
+        );
+      }
+      ctx.ui.log(
+        "官方 CLI db push 已完成且复验为 up-to-date；迁移历史由 Supabase CLI 管理。",
+      );
+      return { state: "applied", ref, files: pending };
     }
     await session.apply();
     ctx.ui.log("官方 CLI db push 已完成，迁移历史由 Supabase CLI 管理。");
@@ -1295,7 +1645,7 @@ async function selectedEntries(
   const choices = available.map((entry) => ({
     name: `${entry.name} ${entry.secret ? "[Secret]" : "[Variable]"}`,
     value: entry.name,
-    checked: entry.field !== "cloudflareToken",
+    checked: !["cloudflareToken", "supabaseCleanupKey"].includes(entry.field),
   }));
   if (
     (!allowed || allowed.includes("supabasePublishableKey")) &&
@@ -1315,7 +1665,7 @@ async function selectedEntries(
     return [];
   }
   const selected = await ctx.ui.check(
-    "选择导出项（仅显示变量名；部署 Token 默认不选）",
+    "选择导出项（仅显示变量名；管理Token与特权清理Key默认不选）",
     choices,
   );
   if (selected.includes(ctx.config.variables.supabasePublishableKey!))
@@ -1397,23 +1747,7 @@ async function exportConfig(ctx: Context): Promise<void> {
     ctx.ui.log("JSON 已导出；业务项目自己的部署校验仍须通过。");
     return;
   }
-  let exportPath = ".env.local";
-  let allowed: string[] | undefined;
-  if (destination === "env" && ctx.config.envExports?.length) {
-    const selected = await ctx.ui.select("选择 .env 用途", [
-      ...ctx.config.envExports.map((entry, index) => ({
-        name: entry.label,
-        value: String(index),
-      })),
-      { name: "自选变量与路径", value: "custom" },
-    ]);
-    if (selected !== "custom") {
-      const selectedPreset = ctx.config.envExports[Number(selected)]!;
-      exportPath = selectedPreset.path.replaceAll("{environment}", ctx.env);
-      allowed = selectedPreset.fields;
-    }
-  }
-  const entries = await selectedEntries(ctx, allowed);
+  const entries = await selectedEntries(ctx);
   if (!entries.length) {
     ctx.ui.log("未导出任何变量，目标保持不变。");
     return;
@@ -1434,11 +1768,18 @@ async function exportConfig(ctx: Context): Promise<void> {
   } else {
     const path = await localExportPath(
       ctx.root,
-      await ctx.ui.input(".env 导出路径", { value: exportPath }),
+      await ctx.ui.input("统一 .env 导出路径（明文；部署无需导出）", {
+        value: unifiedEnvPath(ctx.env),
+      }),
       ctx.runner,
     );
     const old = await readPrivate(path);
-    const contents = mergeEnv(old ?? "", output);
+    const selectedOutput = await resolveEnvConflicts(
+      parseEnv(old ?? ""),
+      output,
+      ctx.ui,
+    );
+    const contents = mergeEnv(old ?? "", selectedOutput);
     if (
       await ctx.ui.confirm(`向 ${path} 合并上述变量（已有同名变量将更新）？`)
     ) {
@@ -1579,17 +1920,28 @@ async function readGithub(ctx: Context): Promise<void> {
     `已从 ${repo} / ${ctx.env} 导入 ${Object.keys(pending).length} 项公开变量到本机；可在“查看配置状态”查看。未修改 GitHub。`,
   );
 }
-async function importConfig(ctx: Context): Promise<void> {
-  const source = await ctx.ui.select("导入来源（只读取 manifest 声明的变量）", [
-    { name: "当前终端环境变量", value: "process" },
-    { name: "项目内 .env 文件", value: "env" },
-  ]);
+export async function importUnifiedEnv(ctx: Context): Promise<void> {
+  await importConfig(ctx, { source: "env", path: unifiedEnvPath(ctx.env) });
+}
+async function importConfig(
+  ctx: Context,
+  options: { source?: "env"; path?: string } = {},
+): Promise<void> {
+  const source =
+    options.source ??
+    (await ctx.ui.select("导入来源（只读取 manifest 声明的变量）", [
+      { name: "当前终端环境变量", value: "process" },
+      { name: "项目内 .env 文件", value: "env" },
+    ]));
   let imported: NodeJS.ProcessEnv;
   if (source === "process") imported = process.env;
   else {
     const path = await localExportPath(
       ctx.root,
-      await ctx.ui.input(".env 文件路径", { value: ".env.local" }),
+      options.path ??
+        (await ctx.ui.input("统一 .env 文件路径（可指定旧文件导入）", {
+          value: unifiedEnvPath(ctx.env),
+        })),
       ctx.runner,
     );
     const contents = await readPrivate(path);
@@ -1597,7 +1949,7 @@ async function importConfig(ctx: Context): Promise<void> {
     imported = parseEnv(contents);
   }
   const found = Object.entries(ctx.config.variables).filter(
-    ([, name]) => imported[name],
+    ([field, name]) => field !== "cloudflareToken" && imported[name],
   );
   if (!found.length) {
     ctx.ui.log(
@@ -1613,9 +1965,26 @@ async function importConfig(ctx: Context): Promise<void> {
   for (const [field, name] of found)
     if (selected.includes(field))
       pending[field] = validateField(ctx.config, field, imported[name]!);
-  Object.assign(values(ctx), pending);
+  const current = Object.fromEntries(
+    Object.entries(ctx.config.variables)
+      .filter(([field]) => values(ctx)[field] !== undefined)
+      .map(([field, name]) => [name, values(ctx)[field]!]),
+  );
+  const namedPending = Object.fromEntries(
+    Object.entries(pending).map(([field, value]) => [
+      ctx.config.variables[field]!,
+      value,
+    ]),
+  );
+  const resolved = await resolveEnvConflicts(current, namedPending, ctx.ui);
+  const accepted = Object.fromEntries(
+    Object.entries(pending).filter(([field]) =>
+      Object.hasOwn(resolved, ctx.config.variables[field]!),
+    ),
+  );
+  Object.assign(values(ctx), accepted);
   ctx.ui.log(
-    `已导入 ${Object.keys(pending).length} 项。管理令牌请通过对应服务的“连接账号”导入。`,
+    `已导入 ${Object.keys(accepted).length} 项。管理令牌请通过对应服务的“连接账号”导入。`,
   );
 }
 async function edit(ctx: Context): Promise<void> {
@@ -1707,7 +2076,9 @@ export const modules: Module[] = [
       {
         id: "migrations",
         title: "官方 CLI 预演 / 应用数据库迁移",
-        execute: migrations,
+        execute: async (ctx) => {
+          await migrations(ctx);
+        },
       },
       {
         id: "create",
@@ -1785,7 +2156,12 @@ export const modules: Module[] = [
       {
         id: "tunnel",
         title: "配置独立 Tunnel / DNS / 读取连接 Token",
-        execute: async (ctx) => configureTunnel(ctx, await tunnelClient(ctx)),
+        execute: async (ctx) => {
+          const client = await tunnelClient(ctx);
+          return client
+            ? await configureTunnel(ctx, client)
+            : { status: "cancelled" as const };
+        },
       },
       {
         id: "host",
@@ -1915,3 +2291,21 @@ export const operations = {
   status: showStatus,
 };
 export const defaultRunner = run;
+
+export async function releaseCloudflareToken(ctx: Context): Promise<string> {
+  return (
+    ctx.data.credentials[values(ctx)["@cloudflareDeploy"] ?? ""] ??
+    (await cloudflareToken(ctx))
+  );
+}
+
+export async function releasePublishableKey(ctx: Context): Promise<void> {
+  const profile = values(ctx);
+  if (
+    profile.supabaseProjectRef &&
+    profile.supabaseUrl &&
+    profile.supabaseUrl !== `https://${profile.supabaseProjectRef}.supabase.co`
+  )
+    throw new Error("Supabase URL 与绑定的 Project Ref 不一致，已停止发布。");
+  await ensurePublishableKey(ctx);
+}

@@ -164,3 +164,31 @@ test("legacy corruption or scope mismatch fails before asking or creating a new 
     }
   }
 });
+
+test("release device selection persists as public navigation without copying credentials", async () => {
+  const base = await realpath(
+    await mkdtemp(join(tmpdir(), "setup-device-binding-")),
+  );
+  try {
+    const first = await StateStore.open(base, base, config);
+    await first.save({
+      credentials: { "cloudflare/private": "fixture-private-token" },
+      profiles: {
+        [profile]: {
+          "@releaseDeviceId": "saved-host",
+          cloudflareToken: "fixture-private-token",
+        },
+      },
+    });
+    const reopened = await StateStore.open(base, base, config);
+    assert.equal(
+      reopened.data.profiles[profile]?.["@releaseDeviceId"],
+      "saved-host",
+    );
+    assert.ok(
+      !(await readFile(first.path, "utf8")).includes("fixture-private-token"),
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});

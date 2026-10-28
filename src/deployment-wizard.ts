@@ -1,15 +1,45 @@
 import { allFields, projectKey, validateField } from "./config.ts";
-import { checkSshHost, deploymentPlan } from "./deployment-plan.ts";
+import {
+  checkSshHost,
+  deploymentPlan,
+  type HostPreflight,
+} from "./deployment-plan.ts";
 import { readPrivate, singleLine, writePrivate } from "./files.ts";
 import { localExportPath } from "./process.ts";
+import { ApiError } from "./providers.ts";
+import {
+  tunnelConfigurationMatches,
+  tunnelReadFailure,
+  type TunnelReadStage,
+} from "./tunnel-readback.ts";
 import {
   CloudflareTunnels,
   mergeTunnelIngress,
   tunnelHostname,
+  tunnelService,
   type Zone,
+  type TunnelConfigurationSnapshot,
 } from "./tunnels.ts";
 import type { Values } from "./vault.ts";
 import type { Context } from "./wizard.ts";
+
+export type GuideOperationResult = {
+  status: "verified" | "configured" | "cancelled" | "manual";
+  message?: string;
+};
+
+function tunnelConfigurationFailure(error: unknown, created: boolean): Error {
+  const prefix = created
+    ? "新建 Tunnel ID 已记录"
+    : "已复用当前项目的 Tunnel ID";
+  const detail =
+    error instanceof ApiError
+      ? `Cloudflare 配置读取失败（HTTP ${error.status}）。${error.status === 401 ? "请重新配置已失效的专用 Tunnel 管理 Token。" : error.status === 403 ? "请检查专用 Token 对目标账号的 Cloudflare Tunnel Edit 权限与资源范围。" : error.status === 404 ? "配置端点未找到，不能视为空配置；请在 Cloudflare 控制台的 Tunnels 中核对该 Tunnel 并初始化路由后重试。" : error.status === 429 ? "请求受限，请稍后重试。" : "请稍后重试或检查 Cloudflare 服务状态。"}`
+      : "无法安全读取或合并现有 Tunnel 配置；API 配置响应无法识别或规则存在冲突，请在 Cloudflare 控制台的 Tunnels 中核对。";
+  return new Error(
+    `${prefix}；${detail} 未覆盖原配置，不会重复新建；修复后继续当前 Tunnel 阶段。`,
+  );
+}
 
 function current(ctx: Context): Values {
   return (ctx.data.profiles[projectKey(ctx.config.project, ctx.env)] ??= {
@@ -95,10 +125,84 @@ function dnsConflict(
   );
 }
 
+/** Fresh read-only resource evidence; connector and application health are separate. */
+export async function verifyGuideTunnelConfiguration(
+  ctx: Context,
+  client: CloudflareTunnels,
+): Promise<GuideOperationResult> {
+  const values = { ...current(ctx) };
+  const incomplete = {
+    status: "configured" as const,
+    message:
+      "Tunnel 的专用管理凭据、项目绑定或连接 Token 尚未齐全；未读取其他凭据或修改资源。",
+  };
+  if (
+    ctx.config.deploymentTopology !== "aws-tunnel" ||
+    !values.cloudflareAccountId ||
+    !values.cloudflareZoneId ||
+    !values.cloudflareTunnelId ||
+    !values.appOrigin ||
+    !values.cloudflareTunnelToken ||
+    values.cloudflareTunnelToken.length > 16384 ||
+    !/^[A-Za-z0-9_+/=.-]+$/.test(values.cloudflareTunnelToken)
+  )
+    return incomplete;
+  let stage: TunnelReadStage = "Zone 归属";
+  try {
+    const account = validateField(
+      ctx.config,
+      "cloudflareAccountId",
+      values.cloudflareAccountId,
+    );
+    const zoneId = validateField(
+      ctx.config,
+      "cloudflareZoneId",
+      values.cloudflareZoneId,
+    );
+    const tunnelId = validateField(
+      ctx.config,
+      "cloudflareTunnelId",
+      values.cloudflareTunnelId,
+    );
+    const origin = validateField(ctx.config, "appOrigin", values.appOrigin);
+    const hostname = tunnelHostname(new URL(origin).hostname);
+    const name = `${ctx.config.project}-${ctx.env}`;
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) return incomplete;
+    const service = tunnelService(`http://${name}:3000`);
+    const zone = await client.zone(account, zoneId);
+    if (hostname !== zone.name && !hostname.endsWith(`.${zone.name}`))
+      throw new Error("zone-mismatch");
+    stage = "Tunnel 身份";
+    const tunnels = await client.tunnels(account);
+    const matches = tunnels.filter((item) => item.name === name);
+    if (matches.length !== 1 || matches[0]!.id !== tunnelId)
+      throw new Error("tunnel-mismatch");
+    stage = "路由配置";
+    const configuration = await client.configuration(account, tunnelId);
+    if (
+      !tunnelConfigurationMatches(
+        configuration,
+        mergeTunnelIngress(configuration, hostname, service),
+      )
+    )
+      throw new Error("configuration-mismatch");
+    stage = "DNS";
+    const dns = await client.dnsRecords(account, zoneId, hostname);
+    if (dns.length !== 1 || dnsConflict(dns, tunnelId))
+      throw new Error("dns-mismatch");
+    return { status: "verified" };
+  } catch (error) {
+    return {
+      status: "configured",
+      message: `${tunnelReadFailure(stage, error)} 未修改资源，连接器与公网健康仍待发布验证。`,
+    };
+  }
+}
+
 export async function configureTunnel(
   ctx: Context,
   client: CloudflareTunnels,
-): Promise<void> {
+): Promise<GuideOperationResult> {
   requireWholeAppTunnel(ctx);
   const values = current(ctx);
   const account = values.cloudflareAccountId;
@@ -107,6 +211,7 @@ export async function configureTunnel(
   const name = `${ctx.config.project}-${ctx.env}`;
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))
     throw new Error("项目与环境组合的 Tunnel 名称不合法或超过 63 字符。");
+  const service = tunnelService(`http://${name}:3000`);
   const zone = await chooseZone(ctx, client, account);
   const appOrigin = validateField(
     ctx.config,
@@ -121,7 +226,7 @@ export async function configureTunnel(
   if (hostname !== zone.name && !hostname.endsWith(`.${zone.name}`))
     throw new Error("应用域名不属于所选 Zone；未修改任何路由。");
   ctx.ui.log(
-    `目标账号：${account}\n独立 Tunnel：${name}\n应用路由：${hostname} → http://app:3000\n仅处理此项目与环境；保留其他域名与配置。`,
+    `目标账号：${account}\n独立 Tunnel：${name}\n应用路由：${hostname} → ${service}\n应用容器须先在项目私有网络声明 ${name} 别名并监听 3000 端口；仅处理此项目与环境，保留其他域名与配置。`,
   );
   let tunnels;
   try {
@@ -138,7 +243,7 @@ export async function configureTunnel(
   let created = false;
   if (!selected) {
     if (!(await ctx.ui.confirm(`确认在上述账号新建独立 Tunnel ${name}？`)))
-      return;
+      return { status: "cancelled" };
     try {
       const records = await client.dnsRecords(account, zone.id, hostname);
       if (dnsConflict(records)) throw new Error("dns-conflict");
@@ -166,15 +271,24 @@ export async function configureTunnel(
   ctx.ui.log(`已选择 Tunnel ID：${selected.id}；后续失败不会自动删除此资源。`);
   await ctx.save();
   let configuration;
+  let initialization: TunnelConfigurationSnapshot | undefined;
   try {
     configuration = await client.configuration(account, selected.id);
-    mergeTunnelIngress(configuration, hostname, "http://app:3000");
-  } catch {
-    throw new Error(
-      created
-        ? "新建 Tunnel ID 已记录；暂时无法读取安全初始配置，请到 Cloudflare 控制台完成配置初始化后重新运行。未假定 404 为空配置。"
-        : "无法安全读取或合并现有 Tunnel 配置；请到控制台核对，未覆盖原配置。",
-    );
+    mergeTunnelIngress(configuration, hostname, service);
+  } catch (error) {
+    if (error instanceof ApiError)
+      throw tunnelConfigurationFailure(error, created);
+    try {
+      const snapshot = await client.configurationSnapshot(account, selected.id);
+      if (snapshot.config !== null) throw error;
+      initialization = snapshot;
+      configuration = {};
+      ctx.ui.log(
+        "已确认此远程管理 Tunnel 尚无配置；将预览初始化路由，复用已记录的 ID。",
+      );
+    } catch (cause) {
+      throw tunnelConfigurationFailure(cause, created);
+    }
   }
   let records;
   try {
@@ -187,16 +301,39 @@ export async function configureTunnel(
   ctx.ui.log(
     `将更新 ${name} 的单条应用域名规则并确保代理 CNAME 指向此 Tunnel；无关 ingress 与配置保留。现有配置不输出，避免泄露敏感内容。`,
   );
-  if (!(await ctx.ui.confirm("确认应用上述 Tunnel 路由与 DNS 配置？"))) return;
+  const replacesLegacyApp = configuration.ingress?.some(
+    (rule) => rule.hostname === hostname && rule.service === "http://app:3000",
+  );
+  if (
+    !(await ctx.ui.confirm(
+      initialization
+        ? `确认初始化此独立 Tunnel 的应用路由与 DNS（${service}，末尾 404 规则）？请确认容器已声明 ${name} 网络别名。`
+        : replacesLegacyApp
+          ? `将此域名的旧 http://app:3000 路由改为 ${service}？请先部署并验证 ${name} 网络别名可用，避免现有应用中断；确认后才应用路由与 DNS 配置。`
+          : `确认应用上述 Tunnel 路由与 DNS 配置（${service}）？请先确认应用容器已声明 ${name} 网络别名。`,
+    ))
+  )
+    return { status: "cancelled" };
   try {
-    await client.updateIngress(
-      account,
-      selected.id,
-      zone.id,
-      hostname,
-      "http://app:3000",
-      configuration,
-    );
+    if (initialization) {
+      await client.updateIngressFromSnapshot(
+        account,
+        selected.id,
+        zone.id,
+        hostname,
+        service,
+        initialization,
+      );
+    } else {
+      await client.updateIngress(
+        account,
+        selected.id,
+        zone.id,
+        hostname,
+        service,
+        configuration,
+      );
+    }
     await client.ensureDns(account, zone.id, hostname, selected.id);
   } catch {
     throw new Error(
@@ -218,7 +355,7 @@ export async function configureTunnel(
         : "临时读取此 Tunnel 的连接 Token，仅用于本次会话？",
     ))
   )
-    return;
+    return { status: "cancelled" };
   let token;
   try {
     token = await client.token(account, selected.id);
@@ -234,6 +371,29 @@ export async function configureTunnel(
       ? "Tunnel 连接 Token 已保存到加密保险库，值不显示。"
       : "Tunnel 连接 Token 已载入本次内存，值不显示。",
   );
+  let readStage: TunnelReadStage = "路由配置";
+  try {
+    const latest = await client.configuration(account, selected.id);
+    const expected = mergeTunnelIngress(configuration, hostname, service);
+    if (!tunnelConfigurationMatches(latest, expected))
+      throw new Error("configuration-mismatch");
+    readStage = "DNS";
+    const dns = await client.dnsRecords(account, zone.id, hostname);
+    if (
+      dns.length !== 1 ||
+      dnsConflict(dns, selected.id) ||
+      !values.cloudflareTunnelToken?.trim()
+    )
+      throw new Error("verification-mismatch");
+  } catch (error) {
+    const message = `已记录 Tunnel 配置与连接 Token；${tunnelReadFailure(readStage, error)} 不能视为部署就绪；连接器、应用及公网健康仍待部署验证。`;
+    ctx.ui.log(message);
+    return { status: "configured", message };
+  }
+  ctx.ui.log(
+    "已只读核验 Tunnel 路由与代理 CNAME，连接 Token 已载入；连接器、应用及公网健康仍待部署验证。",
+  );
+  return { status: "verified" };
 }
 
 export async function showDeploymentPlan(ctx: Context): Promise<void> {
@@ -304,7 +464,9 @@ export async function configureDeployment(ctx: Context): Promise<void> {
   );
 }
 
-export async function checkDeploymentHost(ctx: Context): Promise<void> {
+export async function checkDeploymentHost(
+  ctx: Context,
+): Promise<HostPreflight | undefined> {
   const target = current(ctx).sshTarget;
   if (!target) {
     ctx.ui.log("尚未配置 SSH 目标，请先填写部署配置。");
@@ -323,6 +485,7 @@ export async function checkDeploymentHost(ctx: Context): Promise<void> {
     ctx.ui.log(
       `主机架构：${result.facts.architecture}；TCP 监听端口：${result.facts.listeningPorts.join(", ") || "无"}`,
     );
+  return result;
 }
 
 export async function exportTunnelToken(ctx: Context): Promise<void> {

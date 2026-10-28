@@ -12,7 +12,7 @@ test("env exports require ignored untracked paths and cannot escape the project"
   const root = await mkdtemp(join(tmpdir(), "setup-export-test-"));
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env*\n");
+    await writeFile(join(root, ".gitignore"), ".env*\n.project-setup/\n");
     await writeFile(join(root, ".env.tracked"), "KEY=value", { mode: 0o600 });
     await run("git", ["add", "--force", ".env.tracked"], { cwd: root });
     assert.equal(
@@ -28,7 +28,7 @@ test("env exports require ignored untracked paths and cannot escape the project"
   }
 });
 
-test("Fulcord deployment preset exports only public values accepted by existing deploy scripts", async () => {
+test("Fulcord unified export offers one path and excludes unselected management credentials", async () => {
   const root = await mkdtemp(join(tmpdir(), "setup-export-test-"));
   const config = validateConfig(
     JSON.parse(
@@ -38,10 +38,10 @@ test("Fulcord deployment preset exports only public values accepted by existing 
       ),
     ),
   );
-  const selects = ["export", "env", "1", "exit"];
+  const selects = ["export", "env", "exit"];
   try {
     await run("git", ["init", "--quiet"], { cwd: root });
-    await writeFile(join(root, ".gitignore"), ".env*\n");
+    await writeFile(join(root, ".gitignore"), ".env*\n.project-setup/\n");
     const ctx: Context = {
       root,
       config,
@@ -71,18 +71,20 @@ test("Fulcord deployment preset exports only public values accepted by existing 
         input: async (_message, options) => options!.value!,
         confirm: async () => true,
         check: async (_message, choices) =>
-          choices.map((choice) => choice.value),
+          choices
+            .filter((choice) => choice.checked)
+            .map((choice) => choice.value),
         log: () => {},
       },
     };
     await wizard(ctx);
     const env = parseEnv(
-      await readFile(join(root, "deploy/.env.staging"), "utf8"),
+      await readFile(join(root, ".project-setup/staging/.env"), "utf8"),
     );
-    assert.equal(Object.keys(env).length, 5);
+    assert.ok(Object.keys(env).length > 5);
     assert.equal(env.CF_PAGES_PROJECT, "fulcord-web");
     assert.equal(env.CLOUDFLARE_API_TOKEN, undefined);
-    assert.equal(env.SUPABASE_PUBLISHABLE_KEY, undefined);
+    assert.equal(env.SUPABASE_PUBLISHABLE_KEY, "sb_publishable_example");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

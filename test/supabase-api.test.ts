@@ -126,6 +126,13 @@ for (const strategy of [undefined, "project-managed"] as const)
 
 test("switching Supabase project drops the previous privileged cleanup credential", async () => {
   const { ctx } = context(["new", "input", "org-fixture", ref]);
+  ctx.runtime = {
+    statuses: {},
+    supabaseDatabasePassword: {
+      scope: "old-scope",
+      password: "fixture-database-password",
+    },
+  };
   ctx.data.profiles[projectKey("fixture", "staging")] = {
     supabaseProjectRef: "a".repeat(20),
     supabaseCleanupKey: "sb_secret_old_fixture",
@@ -137,6 +144,7 @@ test("switching Supabase project drops the previous privileged cleanup credentia
   assert.equal(profile.supabaseCleanupKey, undefined);
   assert.equal(profile.cleanupEnabled, "false");
   assert.equal(profile.syntheticFilesEnabled, "false");
+  assert.equal(ctx.runtime.supabaseDatabasePassword, undefined);
 });
 
 for (const mode of ["vault", "memory", "metadata"] as const)
@@ -452,8 +460,7 @@ test("wizard scoped migration never calls profile and blocks changed organizatio
   };
   ctx.ui.input = async (message, options) => {
     if (options?.secret) return "fixture-db-password";
-    assert.match(message, /完整输入目标/);
-    return ref;
+    assert.fail(`unexpected text confirmation: ${message}`);
   };
   ctx.fetcher = async (url) => {
     assert.equal(new URL(String(url)).pathname, `/v1/projects/${ref}`);
