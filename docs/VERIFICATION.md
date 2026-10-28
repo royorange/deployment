@@ -9,6 +9,7 @@
 - 全量450项工具测试通过，行覆盖97.56%、分支90.24%、函数97.08%；typecheck、lint、format、build及独立 tarball 安装烟测通过。独立代码、TypeScript与安全复核发现的确认窗口、目标漂移、归档属性及HTTP错误分类问题均补回归修复。
 - Fulcord 全量120项部署测试通过，typecheck、lint、format及应用生产构建通过。新增本地 buildx 适配器9项回归，覆盖真实 Git 归档、忽略文件与本地属性覆盖、Unix Docker 节点、amd64、OCI标签、digest与子进程边界；没有实际构建或推送新镜像。
 - 真实只读证据：GitHub 精确提交 CI 查询成功；本机 Docker 的构建计划可读且不启动构建；共享 AWS 上 Fulcord 旧运行版本 `d94e87f...` healthy、专用连接器运行，Shimau四个容器正常。应用登录与OpenAPI为200，预设 Pages 入口为522，官网发布与托管业务验收仍待完成。本轮未写入 AWS/Cloudflare/Supabase，也未解锁用户保险库。
+- 本机 `~/.local` 与 Homebrew 两处全局安装均更新为0.10.0，默认命令帮助检查通过。安装后的 `inspectGuideApplication` 通过消费项目控制器 `5fa7570...` 实际 SSH 只读查得 `running / d94e87f...`，没有查询 CI、读取运行凭据或重复迁移；当前消费仓库的真实本地构建 plan 返回 ready=true、outputs为空。
 
 完整设计及已实现/后续能力边界见 [RELEASE_DESIGN.md](RELEASE_DESIGN.md)。Zoncord 保留自管迁移账本，复合发布适配器与可信数据库核验尚待实现；模板更新不表示该项目已可自动部署。
 
