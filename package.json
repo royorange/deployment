@@ -1,6 +1,6 @@
 {
   "name": "@royorange/project-setup",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Interactive, portable Cloudflare, Supabase and GitHub project setup",
   "type": "module",
   "license": "UNLICENSED",
@@ -15,6 +15,16 @@
   },
   "bin": {
     "project-setup": "dist/cli.js"
+  },
+  "exports": {
+    "./remote-compose": {
+      "types": "./dist/remote-compose.d.ts",
+      "import": "./dist/remote-compose.js"
+    },
+    "./private-origin": {
+      "types": "./dist/private-origin.d.ts",
+      "import": "./dist/private-origin.js"
+    }
   },
   "files": [
     "dist",
@@ -39,7 +49,8 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@inquirer/prompts": "8.7.3"
+    "@inquirer/prompts": "8.7.3",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

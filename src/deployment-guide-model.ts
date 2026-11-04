@@ -212,10 +212,17 @@ export function deploymentGuideStages(input: {
       "appOrigin",
       "pagesProject",
       "siteOrigin",
+      ...(config.deploymentTopology === "worker-private-origin"
+        ? ["privateOrigin", "cloudflareZoneId"]
+        : []),
     ]),
     "configured",
   );
-  if (config.deploymentTopology === "aws-tunnel")
+  if (
+    ["aws-tunnel", "worker-private-origin"].includes(
+      config.deploymentTopology ?? "",
+    )
+  )
     add(
       "tunnel",
       "Tunnel 路由、DNS 与连接凭据",
@@ -224,6 +231,14 @@ export function deploymentGuideStages(input: {
         "cloudflareTunnelId",
         "cloudflareTunnelToken",
         "appOrigin",
+        ...(config.deploymentTopology === "worker-private-origin"
+          ? [
+              "privateOrigin",
+              "accessServiceId",
+              "accessClientId",
+              "accessCredential",
+            ]
+          : []),
       ]),
       "configured",
     );

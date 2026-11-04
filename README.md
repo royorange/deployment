@@ -1,6 +1,6 @@
 # Deployment / project-setup
 
-Cloudflare、Supabase、GitHub 的独立交互配置工具。命令保持为 `project-setup`，业务仓库只保留变量映射和自己的部署流程。
+Cloudflare、Supabase、GitHub 的独立交互配置工具。命令保持为 `project-setup`，业务仓库保留声明、服务定义和业务发布规则，工具提供通用资源与远端容器执行能力。
 
 需要 Node >=22.18，建议 Node 24；开发使用固定 pnpm 10.34.7。当前代码保留 `UNLICENSED`，尚未指定开源许可证。
 
@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.10.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.11.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -78,7 +78,7 @@ Pages 操作支持分别选择前台/后台组件，明确输入真实分支，�
 
 适配器协议：固定 Node 参数 `--phase plan|deploy|verify`，标准输入为 JSON `{version:1,project,environment,component,commit,ci:{runId},device?,publicValues}`。组件声明 `runtimeFields` 时输入改为 `{version:2,...,runtimeValues}`；没有声明的旧适配器继续收到 v1。只有确认信任已提交代码后才按需读取 Key 并构造运行配置；冻结后所有阶段使用同一份数据。敏感值仅经 stdin，完整保险库和账号管理凭据不会传入项目适配器。输出单个 JSON `{ready,summary,missing,effects}`，不打印 Secret 或原始进程输出。适配器是受信项目代码，负责项目的发布、恢复和专门验收；通用工具不猜测容器布局，也不执行远端返回的命令。
 
-发布顺序：CI/提交检查 → 受信适配器计划 → 用户确认 → 官方迁移预演/应用/再次核验 → 再核对 CI/源码 → 项目部署 → 基础健康验证。迁移是发布阶段，只执行待应用版本，不由每个应用实例启动执行。SQL 从已通过 CI 的提交构造冻结快照；未知 CLI 输出、取消或未确认迁移都会停止应用发布。bootstrap、专用账号和业务验收按项目声明完成，不自动生成默认登录或 seed 数据。项目自管迁移暂明确阻塞自动应用发布，避免混用其账本。
+发布顺序：CI/提交检查 → 受信适配器计划 → 用户确认 → 官方迁移预演/应用/再次核验 → 再核对 CI/源码 → 项目部署 → 基础健康验证。迁移是发布阶段，只执行待应用版本，不由每个应用实例启动执行。SQL 从已通过 CI 的提交构造冻结快照；未知 CLI 输出、取消或未确认迁移都会停止应用发布。bootstrap、专用账号和业务验收按项目声明完成，不自动生成默认登录或 seed 数据。项目自管迁移须声明 release.database 受控步骤；未声明时阻塞，避免混用账本。
 
 发布回执只含项目、环境、组件、SHA、设备标识、CI run 和阶段状态，默认保存在用户配置目录的 `releases` 下；内存模式仅在本次显示。迁移已完成但应用失败会保留数据库状态，不执行 down/reset/repair。项目适配器另行记录自己的发布与恢复证据。
 
@@ -138,7 +138,7 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 
 ## AWS 与 Cloudflare Tunnel 部署准备
 
-0.4 增加「AWS / Zero Trust Tunnel 部署准备」模块。当前自动配置仅支持 manifest 明确声明 `deploymentTopology: "aws-tunnel"` 的整应用同源拓扑；Fulcord 示例已声明。Zoncord 的 Worker + Access + 私有 API 拓扑不能直接套用，未声明或不同拓扑会拒绝修改入口。工具准备配置与检查，业务容器构建、传输、发布与回滚仍由消费项目的部署脚本负责。
+0.4 增加「AWS / Zero Trust Tunnel 部署准备」模块。整应用使用 `deploymentTopology: "aws-tunnel"`；Worker + Access + 私有 API 使用独立的 `worker-private-origin` 配置流程。后者须提供不同的 appOrigin/privateOrigin、真实 Zone，以及独立 Access 凭据映射；创建与 DNS 写入前预览确认。业务构建与兼容规则由项目定义，远端传输、Compose 核验与容器失败恢复可复用工具模块。
 
 - 录入 SSH 别名/`user@host`、项目与环境独立目录、应用与官方 cloudflared 的固定镜像 digest，以及 HTTPS 自定义应用域名。合成文件与清理调度分别配置；开启合成文件必须同时启用独立清理及其凭据。
 - 复用当前 Cloudflare 账号验证活动 Zone；只复用 `${project}-${environment}` 的专用远程 Tunnel。从已校验的 Tunnel 名称派生容器网络入口 `http://${project}-${environment}:3000`，预览并确认后配置，保留无关 ingress 和末尾 404；DNS 仅在无记录时新增，冲突不覆盖。列表或权限失败不当作“资源不存在”。
@@ -219,3 +219,11 @@ Tunnel 写后回读仅归一化服务端可补充的空 `originRequest`（全局
 ```
 
 具体容器隔离、恢复核验和兼容规则由项目适配器实现。Fulcord 的停止保留数据库、云资源和磁盘文件；恢复只启动已存在版本；回退只允许迁移集及资源绑定匹配的已成功版本，不回滚数据库。共享主机仍共享 CPU、内存与磁盘，资源限制不能替代独立主机隔离。
+
+## 0.11 通用发布接入
+
+- `release.database` 支持项目自管账本的 inspect/plan/apply/verify，SQL 从受信提交冻结，数据库凭据与应用隔离；缺少管理 URI 时，可确认申请当前 Supabase 项目的短时登录，不持久化或重置密码。受限应用角色仍由项目初始化协议管理。
+- 复合组件可声明 `providerOperations: ["cloudflare-deploy"]`，只在 deploy/verify 获得 Cloudflare 操作凭据。
+- 包导出 `@royorange/project-setup/remote-compose` 和 `/private-origin`，供薄适配器复用安全 SSH/Compose、Access 与 Worker 域名绑定；不接受 manifest 中的任意 shell。
+- `setup.authCallbacks: ["/auth/confirm"]` 支持精确回调；Supabase 服务菜单可检查/恢复暂停项目，不升级套餐。Wrangler 支持 apps/edge 工作区。
+- 远端容器健康、完整应用组合和业务验收分别记录；失败不自动回退数据库，单实例可能短暂中断。接入契约与验收见现有 [RELEASE_DESIGN.md](docs/RELEASE_DESIGN.md)。

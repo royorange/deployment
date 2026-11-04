@@ -10,6 +10,8 @@ import {
 } from "./release-ci-policy.ts";
 import { activeReleaseScopes } from "./release-lock.ts";
 import { releaseRuntimeValues } from "./release-runtime.ts";
+import { databaseFields } from "./release-config.ts";
+import { runProjectDatabase } from "./project-database.ts";
 import {
   adapterOutput,
   releaseCheckout,
@@ -40,6 +42,11 @@ export type ReleaseReceipt = {
   ciVerification?: ReleaseCiGateSnapshot;
   state: "planned" | "cancelled" | "failed" | "deployed" | "health-checked";
   database: "not-run" | "applied" | "up-to-date" | "unknown";
+  databaseEvidence?: {
+    ledger: string;
+    sourceDigest: string;
+    verification: "versions-only" | "checksums";
+  };
   phase: string;
   checkedAt: string;
 };
@@ -72,7 +79,11 @@ export async function runRelease(
   if (component.requiresDevice && !device)
     throw new Error("请先选择SSH目标主机。");
   if (device) validateDevice(device);
-  if (component.migrations === "project-managed")
+  if (
+    component.migrations === "project-managed" &&
+    (!config.database?.environments.includes(ctx.env) ||
+      ctx.config.migrationStrategy !== "project-managed")
+  )
     throw new Error(
       "本组件使用项目自管迁移；尚未声明受控初始化步骤，已阻止自动发布，不混用官方迁移账本。",
     );
@@ -182,7 +193,7 @@ export async function runRelease(
     );
     if (
       !(await ctx.ui.confirm(
-        `允许执行此已提交仓库的发布适配器以读取计划？请先确认信任此版本的项目代码。${component.runtimeFields?.length ? `该组件将通过stdin读取运行字段：${component.runtimeFields.join(", ")}；后续计划、部署和核验使用同一份配置。` : ""}`,
+        `允许执行此已提交仓库的发布适配器以读取计划？请先确认信任此版本的项目代码。${component.runtimeFields?.length ? `该组件将通过stdin读取运行字段：${component.runtimeFields.join(", ")}；后续计划、部署和核验使用同一份配置。` : ""}${component.migrations === "project-managed" ? `数据库适配器 ${config.database!.adapter} 仅在数据库阶段读取专属字段 ${databaseFields(config.database).join(", ")}；请一并审阅此受信代码。` : ""}${component.providerOperations?.includes("cloudflare-deploy") ? "该组件声明 Cloudflare 发布能力；部署与核验阶段将获得单次操作 Token。" : ""}`,
       ))
     ) {
       receipt.state = "cancelled";
@@ -221,8 +232,18 @@ export async function runRelease(
       );
       extra.CLOUDFLARE_API_TOKEN = operationToken;
     }
-    const env = releaseProcessEnvironment(extra);
     const call = async (phase: "plan" | "deploy" | "verify") => {
+      if (
+        phase !== "plan" &&
+        component.providerOperations?.includes("cloudflare-deploy") &&
+        !operationToken
+      ) {
+        operationToken = await (deps.cloudflareToken ?? releaseCloudflareToken)(
+          ctx,
+        );
+        extra.CLOUDFLARE_API_TOKEN = operationToken;
+        await ciGate.recheck();
+      }
       assertTarget();
       if ((await releaseCheckout(ctx)) !== sha)
         throw new Error("执行适配器前提交或工作区已变化，已停止。");
@@ -241,7 +262,7 @@ export async function runRelease(
           {
             cwd: ctx.root,
             input: JSON.stringify(request),
-            env,
+            env: releaseProcessEnvironment(extra),
             timeout: phase === "plan" ? 120000 : 1800000,
           },
         ),
@@ -303,6 +324,31 @@ export async function runRelease(
         return receipt;
       }
       receipt.database = migration.state;
+    }
+    if (component.migrations === "project-managed") {
+      receipt.phase = "migration-plan";
+      const migration = await runProjectDatabase(
+        ctx,
+        sha,
+        async () => {
+          receipt.phase = "pre-migration-check";
+          await recheck();
+          receipt.phase = "migration-plan";
+        },
+        () => {
+          receipt.phase = "migration";
+        },
+      );
+      if (!migration) {
+        receipt.state = "cancelled";
+        return receipt;
+      }
+      receipt.database = migration.state;
+      receipt.databaseEvidence = {
+        ledger: migration.ledger,
+        sourceDigest: migration.sourceDigest,
+        verification: migration.verification,
+      };
     }
     receipt.phase = "pre-deploy-check";
     await recheck();

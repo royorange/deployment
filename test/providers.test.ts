@@ -120,3 +120,43 @@ test("GitHub uses stdin for values, correct environment and reports partial writ
   assert.ok(!calls[0]?.args.includes("sensitive-token"));
   assert.equal(calls[0]?.input, "sensitive-token");
 });
+
+test("Supabase restore is target-bound and only resumes a paused project", async () => {
+  const ref = "b".repeat(20),
+    writes: string[] = [];
+  for (const status of ["ACTIVE_HEALTHY", "INACTIVE", "RESTORING", "UNKNOWN"]) {
+    const client = new Supabase("fixture", async (url, options) => {
+      if (options?.method === "POST") {
+        writes.push(String(url));
+        return Response.json({});
+      }
+      return Response.json({ id: ref, organization_id: "org-fixture", status });
+    });
+    if (status === "INACTIVE")
+      assert.equal(
+        await client.restoreProject(ref, "org-fixture"),
+        "requested",
+      );
+    else if (status === "ACTIVE_HEALTHY")
+      assert.equal(await client.restoreProject(ref, "org-fixture"), "active");
+    else await assert.rejects(() => client.restoreProject(ref, "org-fixture"));
+    await assert.rejects(() => client.restoreProject(ref, "wrong-org"));
+  }
+  assert.equal(writes.length, 1);
+});
+
+test("restore accepts an explicitly permitted empty success body, while JSON reads remain strict", async () => {
+  const ref = "c".repeat(20);
+  const client = new Supabase("fixture", async (_url, options) =>
+    options?.method === "POST"
+      ? new Response(null, { status: 200 })
+      : Response.json({ id: ref, organization_id: "org", status: "INACTIVE" }),
+  );
+  assert.equal(await client.restoreProject(ref, "org"), "requested");
+  const api = new Api(
+    "https://api.supabase.com/v1",
+    "fixture",
+    async () => new Response(null, { status: 200 }),
+  );
+  await assert.rejects(() => api.request("/projects"), /JSON/);
+});

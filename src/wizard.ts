@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import { authCallbacks } from "./auth-callbacks.ts";
+import { temporaryDatabaseSession } from "./database-session.ts";
+import {
+  configurePrivateOrigin,
+  verifyPrivateOrigin,
+} from "./private-origin-wizard.ts";
 import {
   allFields,
   name as resourceName,
@@ -548,6 +554,8 @@ export async function verifyGuideCloudflare(
 export async function verifyGuideTunnel(
   ctx: Context,
 ): Promise<GuideOperationResult> {
+  if (ctx.config.deploymentTopology === "worker-private-origin")
+    return verifyPrivateOrigin(ctx);
   const configured = values(ctx);
   const alias = configured["@cloudflareTunnelManagement"];
   const token = alias && ctx.data.credentials[alias];
@@ -1324,11 +1332,81 @@ async function selectSupabase(ctx: Context): Promise<void> {
     "已读取 URL 和 Publishable Key。Management API 可用不代表项目网关可用；暂停项目需先在控制台恢复。项目状态不能证明数据库迁移已执行或组织额度充足。",
   );
 }
+export async function releaseDatabaseCredential(
+  ctx: Context,
+  ref: string,
+): Promise<string | undefined> {
+  const p = values(ctx),
+    alias = p["@supabase"],
+    token = alias && ctx.data.credentials[alias];
+  if (!token || p["@supabaseSource"] === "cli" || p.supabaseProjectRef !== ref)
+    throw new Error(
+      "请配置数据库专属 URI 或绑定此项目的 Supabase PAT 以申请短时数据库登录。",
+    );
+  const client = await supabaseClient(ctx),
+    project = await client.project(ref);
+  const binding = JSON.stringify(values(ctx));
+  if (
+    !(await ctx.ui.confirm(
+      `为 ${ctx.config.project}/${ctx.env} 的 ${ref} 申请短时数据库写入登录？凭据仅传给已信任的数据库适配器，不保存，不修改 postgres 密码；实际 SQL 另行预览确认。`,
+    ))
+  )
+    return;
+  if (
+    JSON.stringify(values(ctx)) !== binding ||
+    ctx.data.credentials[alias!] !== token
+  )
+    throw new Error("确认期间数据库目标或账号变化。");
+  const result = await temporaryDatabaseSession(
+    token,
+    ref,
+    project.organization_id,
+    ctx.fetcher,
+  );
+  ctx.ui.log(
+    `短时数据库登录已准备，有效期至 ${result.expiresAt}；未保存凭据。`,
+  );
+  return result.uri;
+}
+export async function restoreSupabase(
+  ctx: Context,
+): Promise<GuideOperationResult> {
+  const ref = values(ctx).supabaseProjectRef;
+  if (!ref) throw new Error("请先选择 Supabase 项目。");
+  const client = await supabaseClient(ctx);
+  const current = await client.project(ref);
+  if (current.status === "ACTIVE_HEALTHY") return { status: "verified" };
+  if (current.status !== "INACTIVE")
+    return {
+      status: "configured",
+      message: `项目状态 ${current.status}；恢复进行中或状态未知，不重发恢复。`,
+    };
+  ctx.ui.log(
+    `恢复暂停项目 ${current.name} / ${ref}，组织 ${current.organization_id}；沿用现有套餐，不升级配置。项目可用后再核验 Auth 与数据库。`,
+  );
+  if (
+    !(await ctx.ui.confirm(
+      "确认恢复上述暂停项目？恢复后按组织现有套餐计费规则运行。",
+    ))
+  )
+    return { status: "cancelled" };
+  if (values(ctx).supabaseProjectRef !== ref)
+    throw new Error("确认期间项目绑定变化，未恢复。");
+  await client.restoreProject(ref, current.organization_id);
+  const checked = await client.project(ref);
+  ctx.ui.log(
+    `恢复请求已发送；当前状态 ${checked.status}。尚未完成业务健康验证。`,
+  );
+  return {
+    status: checked.status === "ACTIVE_HEALTHY" ? "verified" : "configured",
+  };
+}
 export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
   const ref = values(ctx).supabaseProjectRef;
   const origin = values(ctx).appOrigin;
   if (!ref || !origin)
     throw new Error("请先选择 Supabase 项目并配置应用 Origin。");
+  const requiredCallbacks = authCallbacks(ctx.config, origin);
   if (
     values(ctx)["@supabaseSource"] === "cli" &&
     (await ctx.ui.confirm(
@@ -1336,7 +1414,7 @@ export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
     ))
   ) {
     ctx.ui.log(
-      `项目 ${ref}：Site URL = ${origin}；Redirect URL = ${origin}/**。`,
+      `项目 ${ref}：Site URL = ${origin}；Redirect URL = ${requiredCallbacks.join(", ")}。`,
     );
     await browser(
       ctx,
@@ -1361,7 +1439,9 @@ export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
     throw new Error("Auth URL 配置读取结果不合法；未修改远端设置。");
   if (
     old.site_url === origin &&
-    callbacks(old.uri_allow_list).includes(`${origin}/**`)
+    requiredCallbacks.every((url) =>
+      callbacks(old.uri_allow_list).includes(url),
+    )
   ) {
     ctx.ui.log("Auth Site URL 与所需回调已只读核验一致；未重复更新远端设置。");
     return { status: "verified" };
@@ -1372,11 +1452,11 @@ export async function authOrigins(ctx: Context): Promise<GuideOperationResult> {
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean),
-      `${origin}/**`,
+      ...requiredCallbacks,
     ]),
   ].join(",");
   ctx.ui.log(
-    `项目 ${ref}：Site URL ${display(old.site_url)} → ${origin}；追加 Redirect URL ${origin}/**，保留已有回调地址。`,
+    `项目 ${ref}：Site URL ${display(old.site_url)} → ${origin}；追加 Redirect URL ${requiredCallbacks.join(", ")}，保留已有回调地址。`,
   );
   if (
     await ctx.ui.confirm(
@@ -2049,6 +2129,11 @@ export const modules: Module[] = [
     title: "Supabase",
     actions: [
       {
+        id: "restore",
+        title: "检查 / 恢复暂停的项目（不升级套餐）",
+        execute: (ctx) => connection(ctx, restoreSupabase),
+      },
+      {
         id: "project",
         title: "连接账号 / 选择组织与项目 / 读取应用 Key",
         execute: (ctx) => connection(ctx, selectSupabase),
@@ -2159,7 +2244,9 @@ export const modules: Module[] = [
         execute: async (ctx) => {
           const client = await tunnelClient(ctx);
           return client
-            ? await configureTunnel(ctx, client)
+            ? await (ctx.config.deploymentTopology === "worker-private-origin"
+                ? configurePrivateOrigin(ctx)
+                : configureTunnel(ctx, client))
             : { status: "cancelled" as const };
         },
       },

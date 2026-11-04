@@ -31,6 +31,7 @@ export class Api {
     path: string,
     method: Method = "GET",
     body?: unknown,
+    allowEmpty = false,
   ): Promise<T> {
     if (
       !/^\/[a-zA-Z0-9][a-zA-Z0-9_/?=&.%+-]*$/.test(path) ||
@@ -58,6 +59,7 @@ export class Api {
     if (!response.ok) throw new ApiError(response.status);
     const text = await response.text();
     if (text.length > 2_000_000) throw new Error("服务响应过大。");
+    if (allowEmpty && method !== "GET" && !text.trim()) return undefined as T;
     try {
       return JSON.parse(text) as T;
     } catch {
@@ -272,6 +274,26 @@ export class Supabase {
     )
       throw new Error("Supabase 账号身份响应不合法。");
     return { id: profile.gotrue_id, email: profile.primary_email };
+  }
+  async restoreProject(
+    ref: string,
+    organization: string,
+  ): Promise<"active" | "requested"> {
+    const current = await this.project(ref);
+    if (current.organization_id !== organization)
+      throw new Error("Supabase 组织绑定不匹配；未恢复项目。");
+    if (current.status === "ACTIVE_HEALTHY") return "active";
+    if (current.status !== "INACTIVE")
+      throw new Error(
+        "项目不是可恢复的暂停状态；请重新只读检查，不自动重发请求。",
+      );
+    await this.api.request(
+      `/projects/${projectRef(ref)}/restore`,
+      "POST",
+      {},
+      true,
+    );
+    return "requested";
   }
   async publishableKey(ref: string): Promise<string> {
     const keys = await this.api.request<

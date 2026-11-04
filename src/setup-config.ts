@@ -21,6 +21,7 @@ export type SetupRequirement = {
 };
 export type SetupConfig = {
   auth?: "supabase" | "firebase" | "external" | "none";
+  authCallbacks?: string[];
   components?: SetupComponent[];
   requirements?: SetupRequirement[];
 };
@@ -79,12 +80,35 @@ export function validateSetup(
   definitions: Record<string, Definition>,
 ): void {
   if (config.setup === undefined) return;
-  const setup = object(config.setup, ["auth", "components", "requirements"]);
+  const setup = object(config.setup, [
+    "auth",
+    "authCallbacks",
+    "components",
+    "requirements",
+  ]);
   if (
     setup.auth !== undefined &&
     !["supabase", "firebase", "external", "none"].includes(setup.auth as string)
   )
     throw new Error("项目引导认证方式不合法。");
+  if (setup.authCallbacks !== undefined) {
+    const callbacks = list(setup.authCallbacks, 10);
+    if (
+      setup.auth !== "supabase" ||
+      !callbacks.length ||
+      new Set(callbacks).size !== callbacks.length ||
+      callbacks.some(
+        (path) =>
+          typeof path !== "string" ||
+          path.length > 200 ||
+          !/^\/[A-Za-z0-9_/-]*$/.test(path) ||
+          path.startsWith("//"),
+      )
+    )
+      throw new Error(
+        "Auth 回调必须是不重复的同源绝对路径，不允许通配符、参数或外部 URL。",
+      );
+  }
   const reference = (value: unknown, kind?: string): void => {
     if (
       typeof value !== "string" ||

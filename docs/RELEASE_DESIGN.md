@@ -1,10 +1,10 @@
 # 通用构建、发布与恢复设计
 
-2026-10-28。本文区分本轮实现与后续协议，不把配置模板、构建成功或模拟测试当作业务已上线。
+2026-11-04。本文区分已实现协议与真实发布验收，不把配置模板、构建成功或模拟测试当作业务已上线。
 
 ## 目标与边界
 
-`project-setup` 管理账号/目标绑定、源码信任、验证证据、用户确认、设备、公开回执和流程恢复。项目适配器管理实际构建、迁移账本、部署顺序、运行状态与安全回退。工具不写死 Fulcord 容器、端口、主机或数据库，不以 shell 字符串作为可执行配置。
+`project-setup` 管理账号/目标绑定、源码信任、验证证据、用户确认、设备、公开回执和流程恢复，并提供可复用的 Cloudflare 私有源站配置和 SSH/Compose 发布模块。项目保留构建入口、服务定义、迁移账本、业务兼容规则与复合发布顺序；不重复实现通用运维执行器。工具不写死 Fulcord 容器、主机或数据库，不以 shell 字符串作为可执行配置。
 
 主流程为：检查实际状态 → 补齐配置 → 验证源码 → 准备产物 → 预览发布 → 数据库步骤 → 部署 → 核验 → 业务验收。查看状态、构建产物、发布、停止/恢复是不同操作。只发布 Pages 不要求数据库密码；已有应用健康时可明确保留当前版本继续其他组件。
 
@@ -47,17 +47,23 @@ GitHub 从头不可用、Runner额度耗尽或没有成功记录时，本轮仍�
 
 当前拓扑是 Pages静态Web + Worker同源网关 + Access Service Auth/Tunnel + AWS API-only。现有rollout要求固定Pages版本→镜像/API→contract核验→edge→公网核验。把它套入Fulcord应用→Pages顺序会破坏版本一致性。
 
-接入应使用 `deploy/setup-release.mts` 薄适配器复用已有 scripts/deploy；由它保留完整回退tuple。Zoncord本轮现有配置与未提交文件不修改，也不假称已可一键部署。
+接入使用 `deploy/setup-release.mts` 薄适配器复用已有 scripts/deploy；由它保留完整回退 tuple。通用远端模块核验镜像 digest/revision/amd64、Compose 归属、私密文件、健康与失败恢复。容器健康与完整应用发布成功分别记录。
 
-数据库使用 public.schema_migrations bundle，且受限executor登录角色还需初始化与独立权限验证。当前 project-managed 自动发布明确阻塞，不能改成 none 或改用 Supabase CLI 混账本。后续需要受信的 inspect/plan/apply/verify 数据库步骤，或者人工完成后可信只读核验接口。
+数据库使用 public.schema_migrations，受限 executor 登录角色需初始化与独立权限验证。`release.database` 声明受信 adapter、environments、ledger、sourcePaths、credentialField 与数据库专属 runtimeFields。工具从已通过 CI 的 Git 提交冻结 SQL，经 inspect/plan、确认、状态重核、apply(expectedToken)、verify 后才部署应用。缺少声明继续阻塞，不以 none 或官方 CLI 混账本；版本账本不能冒充历史 SQL checksum 已核验。
+
+数据库管理 URI 只进入数据库阶段。未配置时，可用当前项目的 PAT 经确认申请 Supabase 短时 CLI 登录，pooler 来自实际 API，临时 URI 不保存，PAT 不传适配器，也不重置 postgres 密码。该官方临时登录端点仍为实验接口；不可用时要求显式数据库 URI，失败不会放行。
+
+复合组件通过 `providerOperations:["cloudflare-deploy"]` 明确申请操作凭据，仅 deploy/verify 注入，不进入构建或数据库阶段。`worker-private-origin` 分开 public/private Origin；先配置精确 Service Auth，再写 Tunnel/DNS，拒绝重叠路径或更宽 Access 策略。Worker 域名绑定须有单独 DNS 授权。`setup.authCallbacks` 声明精确相对回调，未声明时兼容旧项目。
+
+Fulcord 对照：2026-11-04 公网只读检查 app-staging 的 /login 与 /api/v1/openapi 为 200；Pages staging 入口为 522。因此复用其已验证 AWS/Tunnel 经验，同时将 Pages、登录与完整版本集合分别验收，不把基础连通称为完整闭环。
 
 ## 后续里程碑与验收
 
 1. **构建产物自动接入**：本地与Actions产出统一manifest；验证受信workflow、run attempt、source SHA、环境/公开配置摘要和artifact摘要后自动采用。远端超时先查询既有run，不能盲目重复dispatch。
 2. **验证协议v3**：GitHub和本地等价验证是互斥来源。项目声明完整检查集，setup执行已提交入口、冻结源码/工具链和结果；不接受手填通过，不用本地结果覆盖已知CI失败。生产默认仍需远端CI。
-3. **项目数据库步骤**：支持Zoncord自管账本及executor bootstrap，保留逐步预览、身份重核、最小权限、失败状态，不自动降级数据库。
-4. **组件依赖与组合发布**：逐组件证据、可选DAG、原子release-set的兼容tuple；清楚区分暂停、失败、待人工恢复。
-5. **项目级Auth/业务验收**：精确callbacks（Zoncord /auth/confirm）、双身份隔离、Admin普通用户拒绝、默认域名绕过检查，按启用能力展开。
+3. **项目数据库验收**：已实现受控协议；逐项目验证真实账本及 bootstrap，失败不自动降级数据库。
+4. **组合发布恢复**：保留兼容 tuple 与逐步回执；跨 Pages、主机、Worker 不承诺整体原子事务。先验证中断恢复，不引入通用 DAG 框架。
+5. **项目级业务验收**：真实 Auth callbacks、双身份隔离、Admin 普通用户拒绝、默认域名绕过检查，按启用能力展开。
 6. **运维**：现有手动状态/停启/回退继续复用；后台告警、备份与恢复演练单独配置，不默默启用计划任务。
 
-本轮必验：重开后只读检查无迁移/秘密，保留旧运行版本不冒充新版本；部分成功只重试剩余组件；CI成功后临时错误可明确降级、过期/真实失败/跨身份拒绝；本地构建不接收运行秘密、不自动发布、不采用错误SHA；显式组件顺序与旧manifest兼容；Zoncord账本门禁保持阻塞。全部测试使用合成凭据，真实发布与业务验收分别记录。
+本轮必验：重开后只读核验实际状态；CI、源码、迁移身份变化拒绝写入；数据库失败不发布，API 失败不切 Worker；配置或私密文件变化不能冒用同 SHA 成功状态；未知状态不自动重放。Fulcord 旧 manifest 保持兼容。全部自动测试使用合成凭据，真实 staging 发布与业务验收分别记录。

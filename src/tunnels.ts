@@ -95,9 +95,11 @@ export function mergeTunnelIngress(
   current: TunnelConfig,
   hostname: string,
   service = "http://app:3000",
+  originRequest?: { httpHostHeader: string },
 ): TunnelConfig {
   tunnelHostname(hostname);
   tunnelService(service);
+  if (originRequest) tunnelHostname(originRequest.httpHostHeader);
   const next = config(current);
   const ingress = next.ingress ?? [];
   if (ingress.length) {
@@ -125,12 +127,25 @@ export function mergeTunnelIngress(
     throw new Error("现有 Tunnel 域名规则存在冲突，请先人工核对。");
   if (matches.length) {
     next.ingress = ingress.map((rule) =>
-      rule.hostname === hostname ? { ...rule, service } : rule,
+      rule.hostname === hostname
+        ? {
+            ...rule,
+            service,
+            ...(originRequest
+              ? {
+                  originRequest: {
+                    ...(object(rule.originRequest) ? rule.originRequest : {}),
+                    ...originRequest,
+                  },
+                }
+              : {}),
+          }
+        : rule,
     );
   } else {
     next.ingress = [
       ...ingress.slice(0, -1),
-      { hostname, service },
+      { hostname, service, ...(originRequest ? { originRequest } : {}) },
       ingress.at(-1) ?? { service: "http_status:404" },
     ];
   }
@@ -315,12 +330,14 @@ export class CloudflareTunnels {
     hostname: string,
     service: string,
     expected: TunnelConfigurationSnapshot,
+    originRequest?: { httpHostHeader: string },
   ): Promise<void> {
     const path = this.tunnelPath(account, tunnel);
     const planned = mergeTunnelIngress(
       expected.config ?? {},
       hostname,
       service,
+      originRequest,
     );
     await this.hostZone(account, zoneId, hostname);
     const current = await this.configurationSnapshot(account, tunnel);

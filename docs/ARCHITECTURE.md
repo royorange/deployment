@@ -15,7 +15,7 @@ Deployment maintains the standalone `@royorange/project-setup` Node CLI. Consume
 - Tokens are never project defaults or public state. Hidden inputs, redacted errors and stdin/environment-only secret transfer are required. API authentication does not establish database, gateway or application health.
 - `src/devices.ts` / `device-menu.ts` manage cross-project SSH connection profiles without storing credentials or persistent network sessions. Strict host keys, no agent forwarding and no port forwards apply to checks and deployment.
 - `src/release-config.ts` validates bounded declarative release metadata; `release-ci.ts` checks the latest exact-SHA same-repository CI. `release-preflight.ts` verifies a clean, matching-origin checkout ignoring Git replacement refs, and limits adapter output/environment. `release-engine.ts` locks the project environment, confirms trusted repository code, declared per-component runtime fields and effects, runs official commit-frozen migrations before project deployment and writes redacted stage receipts. `release-menu.ts` composes these operations while retaining six home entries.
-- Project release adapters are an explicit trusted-code boundary. Only tracked Node files and fixed plan/deploy/verify phases are invoked; no arbitrary shell strings or remote command responses are executed. Consumers implement build, publication and recovery, while setup orchestrates user-selected releases. No billing upgrades or unconfirmed business deployment occur. Project-managed migrations remain blocked until their controlled orchestration is implemented; no ledger guessing occurs.
+- Project release adapters are an explicit trusted-code boundary. Only tracked Node files and fixed plan/deploy/verify phases are invoked; no arbitrary shell strings or remote command responses are executed. Consumers own build definitions, business compatibility and composite release order; setup provides reusable remote execution and orchestrates user-selected releases. No billing upgrades or unconfirmed business deployment occur. Project-managed migrations require an explicit release.database adapter; missing declarations remain blocked and ledgers are never guessed.
 
 The package compiles TypeScript to `dist` and distributes through a local tarball or reviewed GitHub release asset. No npm publication is required for local use. CI tests and packs without real provider credentials.
 
@@ -44,3 +44,11 @@ Tunnel 初始化采用显式空配置快照；HTTP 错误、缺失 `config` 或�
 `release-build.ts` 通过受信项目适配器执行plan/build，绑定完整源码和公开配置；产物采用与业务发布分开。`release-ci-policy.ts` 以单次gate实例维护已核验CI记录，临时故障的显式非生产降级最多300秒，回执记录真实run attempt与降级事实。`github-read.ts` 只解析固定只读CI请求的白名单HTTP元数据，不保留响应正文或凭据。默认严格模式保留。
 
 `deployment-guide-inspection.ts` 复用lifecycle inspect重新读取实际运行版本，显式保留旧版本只代表该版本当前健康。向导逐组件记录本次证据，配置变化和新发布尝试使旧证据失效。Pages API观测不自动通过HTTP/业务验收。完整设计、构建位置选择和Zoncord复合适配器/迁移账本门禁见 [RELEASE_DESIGN.md](RELEASE_DESIGN.md)。
+
+## 0.11 通用执行与项目边界
+
+`project-database*.ts` 从提交冻结 SQL 并绑定目标/账本/计划，运行独立数据库协议；`database-session.ts` 可在确认后申请官方短时登录，管理 PAT 留在工具内。版本与 checksum 核验等级明确区分。应用失败不反向迁移。
+
+`remote-compose.ts` 与固定 Python 3 控制器负责严格 SSH、私有目录/文件、镜像架构与源码、资源归属、锁、健康和失败恢复；项目提供 Compose 与业务兼容规则。该模块须 Linux/Python 3/Docker Compose，内部健康不代表完整业务发布。
+
+`private-origin*.ts` 区分 Worker 公网入口和 Access/Tunnel 私有入口，拒绝覆盖冲突域名/Access 路径和放宽策略。创建身份立即保存，秘密按现有存储模式处理；DNS 需要明确授权。`auth-callbacks.ts` 为写入和只读检查共用精确回调配置，相关字段变化使阶段证据失效。
