@@ -100,3 +100,76 @@ test("more-specific Access paths and wildcard/destination overlaps cannot bypass
     );
   }
 });
+
+const own = {
+  id: "own-app",
+  name: "sample-staging",
+  domain: "api-staging.example.com",
+  type: "self_hosted",
+  // Cloudflare now mirrors the domain into destinations for every self-hosted app.
+  destinations: [{ type: "public", uri: "api-staging.example.com" }],
+  self_hosted_domains: ["api-staging.example.com"],
+};
+function accessApi(apps: unknown[], policies: unknown[] = []) {
+  const requests: { method: string; url: string; body?: unknown }[] = [];
+  const fetcher: typeof fetch = async (url, options) => {
+    const body = options?.body ? JSON.parse(String(options.body)) : undefined;
+    requests.push({ method: options?.method ?? "GET", url: String(url), body });
+    return Response.json({
+      success: true,
+      result: String(url).includes("/policies")
+        ? policies
+        : String(url).includes("/service_tokens")
+          ? [{ id: "token-id", name: "sample-staging" }]
+          : apps,
+    });
+  };
+  return { client: new CloudflarePrivateOrigin("fixture", fetcher), requests };
+}
+
+test("the project's own app is recognized in Cloudflare's destinations format", async () => {
+  const { client, requests } = accessApi([own]);
+  const app = await client.inspectAccess(privateOriginPlan(input));
+  assert.equal(app?.id, "own-app");
+  assert.ok(requests.every((request) => request.method === "GET"));
+});
+
+test("an own-named app whose destinations reach beyond the exact private host is still a conflict", async () => {
+  for (const destinations of [
+    [
+      { type: "public", uri: "api-staging.example.com" },
+      { type: "public", uri: "other.example.com" },
+    ],
+    [{ type: "public", uri: "api-staging.example.com/admin" }],
+    [{ type: "public", uri: "*.example.com" }],
+    [{ type: "private", uri: "api-staging.example.com" }],
+    [
+      {
+        type: "public",
+        uri: "api-staging.example.com",
+        overrides: [{ cookie_path: "/" }],
+      },
+    ],
+  ]) {
+    const { client } = accessApi([{ ...own, destinations }]);
+    await assert.rejects(
+      () => client.inspectAccess(privateOriginPlan(input)),
+      /冲突/,
+      JSON.stringify(destinations),
+    );
+  }
+});
+
+test("new Access apps declare the exact private host as their only destination", async () => {
+  const { client, requests } = accessApi([]);
+  await client
+    .ensureAccess(privateOriginPlan(input), "token-id")
+    .catch(() => {});
+  const created = requests.find(
+    (request) => request.method === "POST" && request.url.endsWith("/apps"),
+  );
+  assert.deepEqual(
+    (created?.body as { destinations?: unknown } | undefined)?.destinations,
+    [{ type: "public", uri: "api-staging.example.com" }],
+  );
+});
