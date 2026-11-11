@@ -1,5 +1,5 @@
 import { allFields, validateField } from "./config.ts";
-import type { ReleaseComponent } from "./release-config.ts";
+import { databaseFields, type ReleaseComponent } from "./release-config.ts";
 import { releasePublishableKey, values, type Context } from "./wizard.ts";
 
 // Call only after the operator trusts the checked-in project adapter.
@@ -13,6 +13,7 @@ export async function releaseRuntimeValues(
     if (
       !Object.hasOwn(ctx.config.variables, field) ||
       !allFields(ctx.config)[field]?.secret ||
+      databaseFields(ctx.config.release?.database).includes(field) ||
       ["cloudflareToken", "supabaseCleanupKey"].includes(field)
     )
       throw new Error("运行配置声明包含不允许的敏感字段。");

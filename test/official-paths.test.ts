@@ -40,3 +40,28 @@ test("a different target reuses launcher Wrangler, preferring target dependencie
     await rm(temp, { recursive: true, force: true });
   }
 });
+
+test("Wrangler is found in an API-only project's edge workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "setup-edge-cli-"));
+  try {
+    const binary = join(
+      root,
+      "apps/edge/node_modules/wrangler/bin/wrangler.js",
+    );
+    await mkdir(dirname(binary), { recursive: true });
+    await writeFile(binary, "");
+    await wranglerRun(
+      root,
+      ["--version"],
+      async (command, args) => {
+        assert.equal(command, process.execPath);
+        assert.deepEqual(args, [binary, "--version"]);
+        return "fixture";
+      },
+      {},
+      root,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

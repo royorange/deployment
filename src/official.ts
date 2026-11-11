@@ -56,6 +56,7 @@ export async function wranglerRun(
   const candidates = [...new Set([root, launchRoot])].flatMap((directory) => [
     join(directory, "node_modules/wrangler/bin/wrangler.js"),
     join(directory, "apps/web/node_modules/wrangler/bin/wrangler.js"),
+    join(directory, "apps/edge/node_modules/wrangler/bin/wrangler.js"),
   ]);
   for (const path of candidates) {
     try {

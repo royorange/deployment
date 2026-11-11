@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "rewriteRelativeImportExtensions": true,
+    "declaration": true,
     "noUncheckedIndexedAccess": true,
     "outDir": "dist",
     "rootDir": "src",

@@ -1,4 +1,5 @@
 import { allFields, validateField } from "./config.ts";
+import { authCallbacks } from "./auth-callbacks.ts";
 import { selectDevice } from "./device-menu.ts";
 import type { Device, DeviceStore } from "./devices.ts";
 import type { GuideOperationResult } from "./deployment-wizard.ts";
@@ -90,10 +91,12 @@ export async function probeGuide(
     status:
       checked.site_url === p.appOrigin &&
       typeof checked.uri_allow_list === "string" &&
-      checked.uri_allow_list
-        .split(",")
-        .map((s) => s.trim())
-        .includes(`${p.appOrigin}/**`)
+      authCallbacks(ctx.config, p.appOrigin).every((url) =>
+        checked.uri_allow_list
+          .split(",")
+          .map((s) => s.trim())
+          .includes(url),
+      )
         ? "verified"
         : "configured",
   };

@@ -1,4 +1,12 @@
 import type { Config } from "./config.ts";
+export type ProjectDatabaseConfig = {
+  adapter: string;
+  environments: string[];
+  ledger: string;
+  sourcePaths: string[];
+  credentialField: string;
+  runtimeFields?: string[];
+};
 export type ReleaseComponent = {
   id: string;
   label: string;
@@ -6,6 +14,7 @@ export type ReleaseComponent = {
   requiresDevice: boolean;
   migrations: "none" | "supabase-cli" | "project-managed";
   runtimeFields?: string[];
+  providerOperations?: Array<"cloudflare-deploy">;
 };
 export type ReleaseConfig = {
   adapter: string;
@@ -23,7 +32,23 @@ export type ReleaseConfig = {
   publicFields?: string[];
   components: ReleaseComponent[];
   lifecycle?: { adapter: string; environments: string[] };
+  database?: ProjectDatabaseConfig;
 };
+
+export function databaseFields(database?: ProjectDatabaseConfig): string[] {
+  return database
+    ? [database.credentialField, ...(database.runtimeFields ?? [])]
+    : [];
+}
+
+export function databaseSourcePath(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 200 &&
+    /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(value) &&
+    !value.split("/").some((part) => ["", ".", "..", ".git"].includes(part))
+  );
+}
 function keys(
   input: unknown,
   allowed: string[],
@@ -60,6 +85,7 @@ export function validateRelease(
     "localBuild",
     "ciTransientFallback",
     "order",
+    "database",
   ]);
   if (
     !config.repository ||
@@ -167,6 +193,66 @@ export function validateRelease(
     )
       throw new Error("生命周期声明必须为项目内适配器和发布环境的子集。");
   }
+  if (release.database !== undefined) {
+    const database = release.database;
+    keys(database, [
+      "adapter",
+      "environments",
+      "ledger",
+      "sourcePaths",
+      "credentialField",
+      "runtimeFields",
+    ]);
+    if (
+      config.migrationStrategy !== "project-managed" ||
+      typeof database.adapter !== "string" ||
+      database.adapter.length > 200 ||
+      !/^deploy\/[A-Za-z0-9][A-Za-z0-9_./-]*\.(mts|mjs)$/.test(
+        database.adapter,
+      ) ||
+      database.adapter
+        .split("/")
+        .some((part) => ["", ".", ".."].includes(part)) ||
+      !Array.isArray(database.environments) ||
+      !database.environments.length ||
+      new Set(database.environments).size !== database.environments.length ||
+      database.environments.some(
+        (env) => !release.environments.includes(env),
+      ) ||
+      typeof database.ledger !== "string" ||
+      !/^[a-z_][a-z0-9_]{0,62}\.[a-z_][a-z0-9_]{0,62}$/.test(database.ledger) ||
+      !Object.hasOwn(config.variables, "supabaseProjectRef") ||
+      !Array.isArray(database.sourcePaths) ||
+      !database.sourcePaths.length ||
+      database.sourcePaths.length > 20 ||
+      !database.sourcePaths.every(databaseSourcePath) ||
+      database.sourcePaths.some((path, i, paths) =>
+        paths.some(
+          (other, j) =>
+            i !== j && (path === other || path.startsWith(`${other}/`)),
+        ),
+      ) ||
+      typeof database.credentialField !== "string" ||
+      (database.runtimeFields !== undefined &&
+        (!Array.isArray(database.runtimeFields) ||
+          database.runtimeFields.length > 10))
+    )
+      throw new Error(
+        "项目数据库声明需要受信适配器、明确目标账本、SQL来源和独立凭据字段。",
+      );
+    const declared = databaseFields(database);
+    if (
+      new Set(declared).size !== declared.length ||
+      declared.some(
+        (field) =>
+          typeof field !== "string" ||
+          !Object.hasOwn(config.variables, field) ||
+          !Object.hasOwn(config.extraFields ?? {}, field) ||
+          !definitions[field]?.secret,
+      )
+    )
+      throw new Error("数据库凭据只允许显式声明的独立项目敏感字段。");
+  }
   if (
     release.publicFields !== undefined &&
     (!Array.isArray(release.publicFields) ||
@@ -196,7 +282,17 @@ export function validateRelease(
       "requiresDevice",
       "migrations",
       "runtimeFields",
+      "providerOperations",
     ]);
+    if (
+      item.providerOperations !== undefined &&
+      (!Array.isArray(item.providerOperations) ||
+        item.providerOperations.length > 1 ||
+        item.providerOperations.some(
+          (operation) => operation !== "cloudflare-deploy",
+        ))
+    )
+      throw new Error("发布操作能力只允许明确的 Cloudflare 部署能力。");
     if (
       item.runtimeFields !== undefined &&
       (!Array.isArray(item.runtimeFields) ||
@@ -208,6 +304,7 @@ export function validateRelease(
             !Object.hasOwn(config.variables, field) ||
             !Object.hasOwn(definitions, field) ||
             !definitions[field]!.secret ||
+            databaseFields(release.database).includes(field) ||
             ["cloudflareToken", "supabaseCleanupKey"].includes(field),
         ))
     )

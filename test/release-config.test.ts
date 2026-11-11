@@ -179,3 +179,90 @@ test("explicit component order lists every component once without changing old m
       validateConfig({ ...base, release: { ...declaration, order } }),
     );
 });
+
+test("project database credentials are isolated and provider operations are explicit", () => {
+  const database = {
+    adapter: "deploy/database.mts",
+    environments: ["staging"],
+    ledger: "public.schema_migrations",
+    sourcePaths: ["supabase/migrations", "supabase/executor.sql"],
+    credentialField: "migrationDatabaseUrl",
+    runtimeFields: ["executorCredential"],
+  };
+  const config = {
+    ...base,
+    migrationStrategy: "project-managed",
+    variables: {
+      supabaseProjectRef: "REF",
+      migrationDatabaseUrl: "DATABASE_URL",
+      executorCredential: "EXECUTOR_PASSWORD",
+    },
+    extraFields: {
+      migrationDatabaseUrl: {
+        label: "Migration connection",
+        kind: "text",
+        secret: true,
+      },
+      executorCredential: {
+        label: "Executor password",
+        kind: "text",
+        secret: true,
+      },
+    },
+    release: {
+      ...release,
+      database,
+      components: [
+        {
+          ...release.components[0],
+          kind: "application",
+          migrations: "project-managed",
+          providerOperations: ["cloudflare-deploy"],
+        },
+      ],
+    },
+  };
+  assert.ok(validateConfig(config));
+  for (const change of [
+    { credentialField: "cloudflareToken" },
+    { sourcePaths: ["../private.sql"] },
+    { sourcePaths: ["supabase/migrations", "supabase/migrations/1.sql"] },
+    { adapter: "deploy/../database.mts" },
+    { environments: ["production"] },
+    { runtimeFields: ["migrationDatabaseUrl"] },
+    { ledger: "public.table;drop" },
+  ])
+    assert.throws(() =>
+      validateConfig({
+        ...config,
+        release: { ...config.release, database: { ...database, ...change } },
+      }),
+    );
+  for (const runtimeFields of [
+    ["migrationDatabaseUrl"],
+    ["executorCredential"],
+  ])
+    assert.throws(() =>
+      validateConfig({
+        ...config,
+        release: {
+          ...config.release,
+          components: [{ ...config.release.components[0], runtimeFields }],
+        },
+      }),
+    );
+  assert.throws(() =>
+    validateConfig({
+      ...config,
+      release: {
+        ...config.release,
+        components: [
+          {
+            ...config.release.components[0],
+            providerOperations: ["arbitrary-command"],
+          },
+        ],
+      },
+    }),
+  );
+});
