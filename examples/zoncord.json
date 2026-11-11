@@ -13,7 +13,11 @@
     "appOrigin": "APP_ORIGIN",
     "privateOrigin": "ORIGIN_BASE_URL",
     "supabaseUrl": "SUPABASE_URL",
-    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY"
+    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY",
+    "executorDatabaseUrl": "CHECK_EXECUTOR_DATABASE_URL",
+    "deploymentEnvironment": "DEPLOYMENT_ENVIRONMENT",
+    "imageRepository": "IMAGE_REPOSITORY",
+    "cloudflaredImage": "CLOUDFLARED_IMAGE"
   },
   "extraFields": {
     "deploymentEnvironment": {
@@ -35,6 +39,11 @@
       "label": "cloudflare/cloudflared@sha256:<digest>",
       "kind": "text",
       "secret": false
+    },
+    "executorDatabaseUrl": {
+      "label": "API 专用受限 executor 数据库连接串",
+      "kind": "text",
+      "secret": true
     }
   },
   "defaults": {
@@ -43,7 +52,9 @@
       "pagesProject": "zoncord-web",
       "workerName": "zoncord-edge-staging"
     },
-    "production": { "deploymentEnvironment": "production" }
+    "production": {
+      "deploymentEnvironment": "production"
+    }
   },
   "jsonExport": {
     "environment": "deploymentEnvironment",
@@ -54,5 +65,80 @@
     "workerName": "workerName",
     "imageRepository": "imageRepository",
     "cloudflaredImage": "cloudflaredImage"
-  }
+  },
+  "setup": {
+    "auth": "supabase",
+    "components": [
+      {
+        "id": "assets",
+        "title": "固定版本静态 Web",
+        "kind": "web",
+        "hosting": "pages",
+        "projectField": "pagesProject",
+        "instructions": "复用项目完整发布流程；固定 Pages deployment receipt 必须先于 API/edge 切换。默认托管地址不应泄露私有数据。"
+      },
+      {
+        "id": "gateway",
+        "title": "同源 Worker 网关",
+        "kind": "web",
+        "hosting": "worker",
+        "originField": "appOrigin",
+        "projectField": "workerName",
+        "instructions": "仅接收公开配置和独立 Access 服务凭据；不接收数据库连接串。"
+      },
+      {
+        "id": "api",
+        "title": "AWS 私有 API",
+        "kind": "api",
+        "hosting": "aws",
+        "originField": "privateOrigin",
+        "instructions": "仅通过 Access Service Auth 和 Tunnel 访问；运行 Supabase 会话与受限 executor。"
+      }
+    ],
+    "requirements": [
+      {
+        "id": "ledger",
+        "title": "项目迁移账本与 executor 初始化",
+        "purpose": "保留 public.schema_migrations 与项目 bundle，不混用官方 CLI 迁移。",
+        "instructions": "复用 Zoncord supabase bundle 和 executor-setup.sql；在项目实现受信只读核验前，setup 不自动发布该拓扑。"
+      },
+      {
+        "id": "auth",
+        "title": "精确 Auth 回调",
+        "purpose": "验证 /auth/confirm 和同源 Cookie。",
+        "instructions": "项目需要精确 /auth/confirm；通用向导目前默认通配回调不能代替此验收。"
+      },
+      {
+        "id": "release-set",
+        "title": "完整版本组合与回退",
+        "purpose": "固定 Pages receipt、API digest/role/contract 和 edge hash 必须兼容。",
+        "instructions": "通过项目 rollout/rollback 管理整组版本；本示例仅配置模板，未声明可执行 release。"
+      },
+      {
+        "id": "access",
+        "title": "私有 API 的 Access 拒绝测试",
+        "purpose": "验证未携带服务凭据时不能访问私有入口。",
+        "instructions": "分别验证拒绝未授权请求和 Worker 经 Service Auth 的正常业务请求。"
+      }
+    ]
+  },
+  "envExports": [
+    {
+      "label": "项目统一配置（当前环境）",
+      "path": ".project-setup/{environment}/.env",
+      "fields": [
+        "cloudflareAccountId",
+        "pagesProject",
+        "workerName",
+        "appOrigin",
+        "privateOrigin",
+        "supabaseUrl",
+        "supabasePublishableKey",
+        "executorDatabaseUrl",
+        "deploymentEnvironment",
+        "imageRepository",
+        "cloudflaredImage"
+      ]
+    }
+  ]
 }

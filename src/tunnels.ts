@@ -16,6 +16,10 @@ export type Tunnel = {
 export type TunnelConfig = Record<string, unknown> & {
   ingress?: Array<Record<string, unknown>>;
 };
+export type TunnelConfigurationSnapshot = {
+  config: TunnelConfig | null;
+  version?: number;
+};
 export type DnsRecord = {
   id: string;
   name: string;
@@ -54,14 +58,21 @@ export function tunnelHostname(value: string): string {
   return value;
 }
 export function tunnelService(value: string): string {
-  const match = /^http:\/\/([a-z][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/.exec(
+  const match = /^http:\/\/([a-z0-9][a-z0-9-]{0,62}):([1-9][0-9]{0,4})$/.exec(
     value,
   );
+  let normalizedHost: string | undefined;
+  try {
+    normalizedHost = match ? new URL(value).hostname : undefined;
+  } catch {
+    // Invalid ports and ambiguous numeric IP spellings are rejected below.
+  }
   if (
     !match ||
     match[1] === "localhost" ||
     match[1]?.endsWith("-") ||
-    Number(match[2]) > 65535
+    Number(match[2]) > 65535 ||
+    normalizedHost !== match[1]
   )
     throw new Error(
       "本地服务只支持 HTTP 容器服务名及有效端口，例如 http://app:3000。",
@@ -240,6 +251,36 @@ export class CloudflareTunnels {
     if (!object(response)) throw new Error("Tunnel 配置响应无效。");
     return config(response.config);
   }
+  async configurationSnapshot(
+    account: string,
+    tunnel: string,
+  ): Promise<TunnelConfigurationSnapshot> {
+    const path = this.tunnelPath(account, tunnel);
+    const response = await this.result<unknown>(`${path}/configurations`);
+    if (
+      !object(response) ||
+      !Object.hasOwn(response, "config") ||
+      (response.account_id !== undefined && response.account_id !== account) ||
+      (response.tunnel_id !== undefined && response.tunnel_id !== tunnel) ||
+      (response.version !== undefined &&
+        (!Number.isSafeInteger(response.version) ||
+          Number(response.version) < 0))
+    )
+      throw new Error("Tunnel 配置响应或归属无效。");
+    const version =
+      response.version === undefined
+        ? {}
+        : { version: response.version as number };
+    if (response.config === null && Number(response.version ?? 0) > 0)
+      throw new Error("已有版本的 Tunnel 缺少配置响应；未视为空配置。");
+    const current = response.config === null ? null : config(response.config);
+    const remote = this.readTunnel(await this.result(path), account);
+    if (remote.id !== tunnel) throw new Error("Tunnel 归属响应不合法。");
+    if (response.config === null) {
+      return { config: null, ...version };
+    }
+    return { config: current, ...version };
+  }
   private async hostZone(
     account: string,
     zoneId: string,
@@ -265,6 +306,26 @@ export class CloudflareTunnels {
     const current = await this.configuration(account, tunnel);
     if (!isDeepStrictEqual(current, expectedConfig))
       throw new Error("Tunnel 配置在预览后发生变化，请重新预览再确认。");
+    await this.result(`${path}/configurations`, "PUT", { config: planned });
+  }
+  async updateIngressFromSnapshot(
+    account: string,
+    tunnel: string,
+    zoneId: string,
+    hostname: string,
+    service: string,
+    expected: TunnelConfigurationSnapshot,
+  ): Promise<void> {
+    const path = this.tunnelPath(account, tunnel);
+    const planned = mergeTunnelIngress(
+      expected.config ?? {},
+      hostname,
+      service,
+    );
+    await this.hostZone(account, zoneId, hostname);
+    const current = await this.configurationSnapshot(account, tunnel);
+    if (!isDeepStrictEqual(current, expected))
+      throw new Error("Tunnel 配置或版本在预览后发生变化，请重新预览再确认。");
     await this.result(`${path}/configurations`, "PUT", { config: planned });
   }
   async dnsRecords(

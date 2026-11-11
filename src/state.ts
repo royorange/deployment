@@ -21,6 +21,7 @@ const bindings = new Set([
   "@repository",
   "@githubIdentity",
   "@githubLogin",
+  "@releaseDeviceId",
 ]);
 export function vaultProfileKey(
   root: string,

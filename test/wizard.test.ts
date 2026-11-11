@@ -101,6 +101,8 @@ async function config() {
   ];
   return validateConfig({
     ...current,
+    release: undefined,
+    setup: undefined,
     variables: Object.fromEntries(
       Object.entries(current.variables).filter(([field]) =>
         fields.includes(field),
