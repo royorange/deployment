@@ -2,7 +2,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectDevice } from "./device-menu.ts";
 import { DeviceStore, type Device } from "./devices.ts";
-import { bindEnvironmentDevice } from "./environment-device.ts";
+import {
+  bindEnvironmentDevice,
+  sharedHostWarning,
+} from "./environment-device.ts";
 import { runRelease, type ReleaseReceipt } from "./release-engine.ts";
 import { safeMessage, values, type Context } from "./wizard.ts";
 
@@ -130,13 +133,14 @@ export async function runReleaseFlow(
         );
       } else {
         device = await selectDevice({ ui: ctx.ui, store, runner: ctx.runner });
-        if (!device || !(await bindEnvironmentDevice(ctx, device, store)))
-          return result("cancelled");
+        if (!device) return result("cancelled");
       }
-      if (values(ctx)["@releaseDeviceId"] !== device.id) {
-        values(ctx)["@releaseDeviceId"] = device.id;
-        await ctx.save();
-      }
+      // Every binding change, including a requested device that differs
+      // from the saved one, goes through the same confirmation guard.
+      if (!(await bindEnvironmentDevice(ctx, device, store)))
+        return result("cancelled");
+      const warning = sharedHostWarning(ctx, device);
+      if (warning) ctx.ui.log(warning);
     }
     for (const component of components) {
       const receipt = await (dependencies.run ?? runRelease)(

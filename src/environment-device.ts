@@ -33,6 +33,17 @@ export function boundEnvironmentDevice(
   return id ? store.read(id) : undefined;
 }
 
+/** Warning when production and another environment of the project share a host. */
+export function sharedHostWarning(
+  ctx: Context,
+  device: Device,
+): string | undefined {
+  const shared = environmentsSharingDevice(ctx, device.id);
+  if (!shared.length || !(isProduction(ctx.env) || shared.some(isProduction)))
+    return undefined;
+  return `注意：${describe(device)} 同时用于 ${shared.map((env) => `${ctx.config.project}/${env}`).join("、")}；production 与其他环境共用主机会共享内存、磁盘和出口 IP，建议使用独立设备。`;
+}
+
 function bindingWarnings(
   ctx: Context,
   device: Device,
@@ -49,16 +60,13 @@ function bindingWarnings(
       "新设备发布并核验通过后，请在“运行状态”中选择旧设备停止该环境；此前的发布与运行核验不适用于新设备。",
     );
   }
+  const warning = sharedHostWarning(ctx, device);
   const shared = environmentsSharingDevice(ctx, device.id);
-  if (shared.length) {
+  if (warning) lines.push(warning);
+  else if (shared.length)
     lines.push(
       `注意：${describe(device)} 已用于 ${shared.map((env) => `${ctx.config.project}/${env}`).join("、")}。`,
     );
-    if (isProduction(ctx.env) || shared.some(isProduction))
-      lines.push(
-        "production 与其他环境共用主机会共享内存、磁盘和出口 IP，建议使用独立设备。",
-      );
-  }
   return lines;
 }
 
@@ -73,9 +81,7 @@ export async function bindEnvironmentDevice(
 ): Promise<boolean> {
   const previous = values(ctx)[DEVICE_BINDING];
   if (previous === device.id) return true;
-  const shared = environmentsSharingDevice(ctx, device.id);
-  const productionShare =
-    shared.length > 0 && (isProduction(ctx.env) || shared.some(isProduction));
+  const productionShare = sharedHostWarning(ctx, device) !== undefined;
   const lines = bindingWarnings(ctx, device, previous, store);
   if (previous || productionShare) {
     if (!(await ctx.ui.confirm(`${lines.join("\n")}\n确认使用此设备？`))) {
@@ -84,7 +90,14 @@ export async function bindEnvironmentDevice(
     }
   } else if (lines.length) ctx.ui.log(lines.join("\n"));
   values(ctx)[DEVICE_BINDING] = device.id;
-  await ctx.save();
+  try {
+    await ctx.save();
+  } catch (error) {
+    // Keep memory consistent with the persisted binding.
+    if (previous === undefined) delete values(ctx)[DEVICE_BINDING];
+    else values(ctx)[DEVICE_BINDING] = previous;
+    throw error;
+  }
   ctx.ui.log(`${ctx.config.project}/${ctx.env} 部署设备：${describe(device)}`);
   return true;
 }

@@ -132,17 +132,20 @@ export async function performGuideStage(
     });
     if (device && !(await bindEnvironmentDevice(ctx, device, options.devices)))
       return { outcome: { status: "cancelled" } };
-    if (device) {
-      if (Object.hasOwn(ctx.config.variables, "sshTarget")) {
-        try {
-          values(ctx).sshTarget = validateField(
-            ctx.config,
-            "sshTarget",
-            `${device.user}@${device.host}`,
-          );
-        } catch {
-          /* The release adapter still receives the validated complete device. */
-        }
+    if (device && Object.hasOwn(ctx.config.variables, "sshTarget")) {
+      let target: string | undefined;
+      try {
+        target = validateField(
+          ctx.config,
+          "sshTarget",
+          `${device.user}@${device.host}`,
+        );
+      } catch {
+        /* The release adapter still receives the validated complete device. */
+      }
+      if (target && values(ctx).sshTarget !== target) {
+        values(ctx).sshTarget = target;
+        await ctx.save();
       }
     }
     return { device, outcome: { status: device ? "configured" : "cancelled" } };

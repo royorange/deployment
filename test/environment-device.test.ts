@@ -9,6 +9,7 @@ import {
   bindEnvironmentDevice,
   boundEnvironmentDevice,
   environmentsSharingDevice,
+  sharedHostWarning,
   switchEnvironmentDevice,
 } from "../src/environment-device.ts";
 import type { Context } from "../src/wizard.ts";
@@ -205,6 +206,72 @@ test("a missing saved device is reported instead of silently replaced", async ()
     assert.equal(result, undefined);
     assert.equal(binding(f.ctx), "removed-host");
     assert.ok(f.logs.some((l) => l.includes("removed-host")));
+  } finally {
+    await f.close();
+  }
+});
+
+test("a failed save restores the previous binding", async () => {
+  const f = await fixture("staging", { staging: "shared-host" });
+  f.ctx.save = async () => {
+    throw new Error("disk full");
+  };
+  try {
+    await assert.rejects(
+      bindEnvironmentDevice(f.ctx, dedicated, f.store),
+      /disk full/,
+    );
+    assert.equal(binding(f.ctx), "shared-host");
+  } finally {
+    await f.close();
+  }
+});
+
+test("an interrupted confirmation leaves the binding unchanged", async () => {
+  const f = await fixture("staging", { staging: "shared-host" });
+  f.ctx.ui.confirm = async () => {
+    const error = new Error("cancelled");
+    error.name = "ExitPromptError";
+    throw error;
+  };
+  try {
+    await assert.rejects(bindEnvironmentDevice(f.ctx, dedicated, f.store), {
+      name: "ExitPromptError",
+    });
+    assert.equal(binding(f.ctx), "shared-host");
+  } finally {
+    await f.close();
+  }
+});
+
+test("staging joining a production host is also confirmed, including the prod alias", async () => {
+  const f = await fixture("staging", { production: "shared-host" });
+  f.answer(false);
+  try {
+    assert.equal(await bindEnvironmentDevice(f.ctx, shared, f.store), false);
+    assert.match(f.confirms[0]!, /fixture\/production/);
+  } finally {
+    await f.close();
+  }
+  const g = await fixture("prod", { staging: "shared-host" });
+  g.ctx.config.environments = ["staging", "prod"];
+  g.answer(false);
+  try {
+    assert.equal(await bindEnvironmentDevice(g.ctx, shared, g.store), false);
+    assert.equal(g.confirms.length, 1);
+  } finally {
+    await g.close();
+  }
+});
+
+test("shared production host warning is available for an unchanged binding", async () => {
+  const f = await fixture("production", {
+    staging: "shared-host",
+    production: "shared-host",
+  });
+  try {
+    assert.match(sharedHostWarning(f.ctx, shared) ?? "", /fixture\/staging/);
+    assert.equal(sharedHostWarning(f.ctx, dedicated), undefined);
   } finally {
     await f.close();
   }
