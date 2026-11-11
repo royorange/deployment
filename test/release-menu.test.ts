@@ -148,6 +148,7 @@ test("missing release manifest or unsupported topology explains the next step wi
 test("device profiles can be added and reused inside deployment without opening a network session", async () => {
   const f = await fixture([
     "devices",
+    "manage",
     "add",
     "device:test-host",
     "command",
@@ -209,6 +210,17 @@ test("local construction is selectable without querying GitHub or publishing com
         .filter((call) => call.command === process.execPath)
         .map((call) => call.args.at(-1)),
       ["plan", "build"],
+    );
+  } finally {
+    await f.close();
+  }
+});
+test("deployment host menu shows the current environment binding before switching", async () => {
+  const f = await fixture(["devices", "switch", "back", "back", "back"]);
+  try {
+    await f.run();
+    assert.ok(
+      f.logs.some((l) => l.includes("fixture/staging 当前部署设备：未绑定")),
     );
   } finally {
     await f.close();

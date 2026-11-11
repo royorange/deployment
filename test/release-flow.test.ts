@@ -304,3 +304,37 @@ test("explicit project order supports a Pages-first composite topology", async (
   assert.equal(result.state, "health-checked");
   assert.deepEqual(f.calls, ["pages", "app"]);
 });
+test("a requested device that differs from the binding must pass the switch confirmation", async () => {
+  const f = await fixture();
+  await f.store.save({ ...f.device, id: "other-host", label: "其他设备" });
+  values(f.ctx)["@releaseDeviceId"] = "other-host";
+  let asked = 0;
+  f.ctx.ui.confirm = async () => {
+    asked++;
+    return false;
+  };
+  const result = await runReleaseFlow(
+    f.ctx,
+    { componentIds: ["app"], deviceId: f.device.id, store: f.store },
+    { run: f.execute },
+  );
+  assert.equal(result.state, "cancelled");
+  assert.equal(asked, 1);
+  assert.equal(values(f.ctx)["@releaseDeviceId"], "other-host");
+  assert.deepEqual(f.calls, []);
+});
+test("an existing production binding shared with another environment is warned on release", async () => {
+  const f = await fixture();
+  f.ctx.config.environments = ["staging", "production"];
+  values(f.ctx)["@releaseDeviceId"] = f.device.id;
+  f.ctx.env = "production";
+  values(f.ctx)["@releaseDeviceId"] = f.device.id;
+  values(f.ctx).cloudflareTunnelId = "11111111-2222-3333-4444-555555555555";
+  f.ctx.config.release!.environments = ["staging", "production"];
+  await runReleaseFlow(
+    f.ctx,
+    { componentIds: ["app"], store: f.store },
+    { run: f.execute },
+  );
+  assert.ok(f.logs.some((l) => l.includes("fixture/staging")));
+});

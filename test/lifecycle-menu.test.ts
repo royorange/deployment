@@ -142,3 +142,37 @@ test("explicit device selection is saved once and unsupported environments do no
     await f.close();
   }
 });
+test("another registered device can be operated once without changing the binding", async () => {
+  const f = await fixture();
+  const store = await DeviceStore.open(f.ctx.deviceDirectory!, {
+    memory: true,
+  });
+  const previous = { ...device, id: "old-host", label: "Old host" };
+  await store.save(device);
+  await store.save(previous);
+  const answers = ["other", "device:old-host", "stop", "back"];
+  const messages: string[] = [];
+  try {
+    f.ctx.ui.select = async (message, choices) => {
+      messages.push(message);
+      const answer = answers.shift();
+      assert.ok(
+        choices.some((c) => c.value === answer),
+        `${answer}: ${message}`,
+      );
+      return answer!;
+    };
+    await lifecycleMenu(f.ctx, { store });
+    assert.equal(answers.length, 0);
+    assert.ok(messages.some((m) => m.includes("Old host")));
+    assert.equal(
+      f.ctx.data.profiles[projectKey("fixture", "staging")]![
+        "@releaseDeviceId"
+      ],
+      "host",
+    );
+    assert.ok(f.calls.some((c) => c.args.at(-1) === "apply"));
+  } finally {
+    await f.close();
+  }
+});
