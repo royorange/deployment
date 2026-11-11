@@ -624,3 +624,61 @@ test("a bound Wrangler login that lost its CLI installs it on request and resume
     .execute(ctx);
   assert.equal(installs, 1);
 });
+
+test("the Tunnel management Token hint lists Access permissions only for private-origin projects", async () => {
+  for (const [topology, expectAccess] of [
+    ["worker-private-origin", true],
+    ["aws-tunnel", false],
+  ] as const) {
+    const logs: string[] = [];
+    const ctx: Context = {
+      root: "/fixture",
+      config: validateConfig({
+        ...config,
+        deploymentTopology: topology,
+      }),
+      env: "staging",
+      storageMode: "memory",
+      data: {
+        credentials: {},
+        profiles: {
+          [projectKey("fulcord", "staging")]: {
+            cloudflareAccountId: account,
+            cloudflareZoneId: "c".repeat(32),
+          },
+        },
+      },
+      save: async () => {},
+      ui: {
+        select: async () => "new",
+        input: async () => "fixture-token",
+        confirm: async () => false,
+        check: async () => [],
+        log: (message) => logs.push(message),
+      },
+      runner: async () => "",
+      fetcher: async () => {
+        throw new Error("offline fixture");
+      },
+    };
+    await modules
+      .find((module) => module.id === "deployment")!
+      .actions.find((action) => action.id === "management-token")!
+      .execute(ctx)
+      .catch(() => {});
+    const hint = logs.find((message) =>
+      message.startsWith("Tunnel 管理 API Token"),
+    );
+    assert.ok(hint, topology);
+    assert.equal(
+      hint.includes("Access: Service Tokens Edit"),
+      expectAccess,
+      topology,
+    );
+    assert.equal(
+      hint.includes("Access: Apps and Policies Edit"),
+      expectAccess,
+      topology,
+    );
+  }
+});

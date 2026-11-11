@@ -86,6 +86,25 @@ function coversHost(value: unknown, hostname: string): boolean {
     (host.startsWith("*.") && hostname.endsWith(host.slice(1)))
   );
 }
+/**
+ * Cloudflare mirrors a self-hosted app's domain into `destinations`; only that
+ * exact single public host (no path, wildcard or override) belongs to the plan.
+ */
+function onlyDestination(value: unknown, hostname: string): boolean {
+  if (value === undefined || (Array.isArray(value) && value.length === 0))
+    return true;
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const [destination] = value;
+  return (
+    object(destination) &&
+    destination.type === "public" &&
+    typeof destination.uri === "string" &&
+    destination.uri.toLowerCase() === hostname &&
+    (destination.overrides === undefined ||
+      (Array.isArray(destination.overrides) &&
+        destination.overrides.length === 0))
+  );
+}
 /** Resource operations for explicitly reviewed Worker + Access + Tunnel plans. */
 export class CloudflarePrivateOrigin {
   private api: Api;
@@ -153,7 +172,7 @@ export class CloudflarePrivateOrigin {
           a.domain !== plan.hostname ||
           a.name !== plan.name ||
           a.type !== "self_hosted" ||
-          (Array.isArray(a.destinations) && a.destinations.length > 0) ||
+          !onlyDestination(a.destinations, plan.hostname) ||
           (Array.isArray(a.self_hosted_domains) &&
             a.self_hosted_domains.some((d) => d !== plan.hostname)) ||
           (Array.isArray(a.overrides) && a.overrides.length > 0),
@@ -212,6 +231,7 @@ export class CloudflarePrivateOrigin {
       const created = await this.result(`${this.path(plan)}/apps`, "POST", {
         name: plan.name,
         domain: plan.hostname,
+        destinations: [{ type: "public", uri: plan.hostname }],
         type: "self_hosted",
         app_launcher_visible: false,
         service_auth_401_redirect: true,

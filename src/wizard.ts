@@ -435,7 +435,7 @@ async function credential(
       else {
         ctx.ui.log(
           options.purpose === "tunnel"
-            ? "Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。请在稍后出现的“隐藏输入”框中粘贴；当前的说明、浏览器确认和 Shell 提示符都不是 Token 输入框。"
+            ? `Tunnel 管理 API Token：仅目标账号的 Cloudflare Tunnel Edit${ctx.config.deploymentTopology === "worker-private-origin" ? "、Access: Apps and Policies Edit、Access: Service Tokens Edit" : ""}，以及目标域的 Zone Read + DNS Edit。账号列表权限可选。该 Token 不作为容器连接 Token 或应用配置导出。请在稍后出现的“隐藏输入”框中粘贴；当前的说明、浏览器确认和 Shell 提示符都不是 Token 输入框。`
             : "API Token：指定账号的 Cloudflare Pages Edit + Workers Scripts Edit；自动列出账号另需 Account Settings Read，也可手填 Account ID。",
         );
         await browser(ctx, "https://dash.cloudflare.com/profile/api-tokens");

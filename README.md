@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.13.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.13.1.tgz
 ```
 
 之后在项目目录或用户目录运行：
