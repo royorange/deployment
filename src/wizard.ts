@@ -104,6 +104,8 @@ export type Context = {
   runner: Runner;
   fetcher?: typeof fetch;
   ensureSupabaseCli?: () => Promise<boolean>;
+  /** Finds or, after confirmation, installs Wrangler; false means unavailable or declined. */
+  ensureWrangler?: (root: string) => Promise<boolean>;
   deviceDirectory?: string;
   releaseDirectory?: string;
   save: () => Promise<void>;
@@ -278,6 +280,12 @@ async function credential(
       provider === "supabase" &&
       ctx.ensureSupabaseCli &&
       !(await ctx.ensureSupabaseCli())
+    )
+      throw new ConnectionCancelled();
+    if (
+      provider === "cloudflare" &&
+      ctx.ensureWrangler &&
+      !(await ctx.ensureWrangler(ctx.root))
     )
       throw new ConnectionCancelled();
     const profile = profileName(
@@ -462,15 +470,31 @@ function activeCredential(
     (provider === "cloudflare" ? values(ctx).cloudflareToken : undefined)
   );
 }
-async function cloudflareToken(ctx: Context): Promise<string> {
-  if (values(ctx)["@cloudflareSource"] === "wrangler") {
-    const session = await wranglerSession(
+async function boundWranglerSession(ctx: Context) {
+  const open = () =>
+    wranglerSession(
       ctx.root,
       ctx.runner,
       values(ctx)["@cloudflareProfile"] ?? "default",
       values(ctx)["@cloudflareIdentity"],
       values(ctx).cloudflareAccountId,
     );
+  try {
+    return await open();
+  } catch (error) {
+    // A missing CLI is recoverable in place; the existing login binding is unchanged.
+    if (
+      !(error instanceof CommandUnavailableError) ||
+      !ctx.ensureWrangler ||
+      !(await ctx.ensureWrangler(ctx.root))
+    )
+      throw error;
+    return open();
+  }
+}
+async function cloudflareToken(ctx: Context): Promise<string> {
+  if (values(ctx)["@cloudflareSource"] === "wrangler") {
+    const session = await boundWranglerSession(ctx);
     runtime(ctx).officialCloudflareToken = session.token;
     status(ctx, "cloudflare", {
       state: "已验证",

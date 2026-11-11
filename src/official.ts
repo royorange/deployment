@@ -1,5 +1,4 @@
-import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { resolveWrangler } from "./managed-wrangler.ts";
 import { run, type Runner, type RunOptions } from "./process.ts";
 import type { Account, SupabaseProject } from "./providers.ts";
 
@@ -52,25 +51,12 @@ export async function wranglerRun(
     WRANGLER_SEND_METRICS: "false",
     ...options.env,
   };
-  // Selecting another project must not hide the launcher's installed CLI.
-  const candidates = [...new Set([root, launchRoot])].flatMap((directory) => [
-    join(directory, "node_modules/wrangler/bin/wrangler.js"),
-    join(directory, "apps/web/node_modules/wrangler/bin/wrangler.js"),
-    join(directory, "apps/edge/node_modules/wrangler/bin/wrangler.js"),
-  ]);
-  for (const path of candidates) {
-    try {
-      await access(path);
-    } catch {
-      continue;
-    }
-    return runner(process.execPath, [path, ...args], {
-      ...options,
-      cwd: root,
-      env,
-    });
-  }
-  return runner("wrangler", args, { ...options, cwd: root, env });
+  const resolved = await resolveWrangler(root, launchRoot);
+  return runner(resolved.command, [...resolved.prefix, ...args], {
+    ...options,
+    cwd: root,
+    env,
+  });
 }
 export type WranglerSession = {
   type: "oauth" | "api_token";

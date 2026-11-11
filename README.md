@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.12.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.13.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -134,8 +134,10 @@ PAT 与其他服务手动输入的 Token、项目 Key 共用本机加密保险�
 
 - Supabase API 配置：工具内置，请提供授权 PAT。
 - GitHub：复用官方 `gh`，需预先安装。
-- Cloudflare：Wrangler 按目标项目依赖 → 启动目录依赖 → 全局命令查找。独立工具从用户目录启动时，不能凭空找到其他业务仓库私有的 Wrangler；需要目标/启动目录可用或全局安装。
+- Cloudflare：Wrangler 按目标项目依赖 → 启动目录依赖 → setup 私有缓存 → 系统 PATH 查找；doctor 显示实际使用的位置，未找到时列出已检查的目录。
 - Supabase CLI：仅数据库迁移或显式官方 CLI 登录需要，要求 >=2.120.0。
+
+缺少 Wrangler 时（0.13.0），选择 Cloudflare 官方登录或使用已绑定的 Wrangler 登录会先说明原因，确认后把固定版本 `4.149.0` 安装到 `$XDG_CACHE_HOME/project-setup/tools/wrangler/4.149.0/<platform>-<arch>`（默认 `~/.cache`），随后继续原操作。安装按随包发布的 `tools/wrangler/package-lock.json` 执行 `npm ci --ignore-scripts`，每个依赖由 npm 按 sha512 校验，安装后核对版本再启用；不修改系统 PATH 或 shell 配置，不回显 npm 输出。缓存使用前检查符号链接、所有者与权限，不安全时停止；中断的安装在原进程退出后自动回收锁和临时目录；项目依赖里的 Wrangler 无法运行时提示修复项目依赖，不另装被其遮蔽的副本。拒绝或失败时提示手动命令 `npm install -g wrangler@4.149.0`，原账号绑定保持不变。升级固定版本时同时更新锁文件与 `WRANGLER_VERSION`。
 
 缺少兼容 Supabase CLI 时，相关操作会展示官方固定版本 `2.120.0`、平台、来源 URL 和缓存路径。确认后下载官方 Release 压缩包，按代码中固定的 SHA256 校验，同时安装 `supabase` 与其配套 `supabase-go`。不执行远端安装脚本、不修改系统 PATH、不向业务仓库安装依赖。取消后返回结果页，不继续询问数据库密码或链接项目。
 

@@ -10,7 +10,7 @@ import {
 } from "../src/official.ts";
 import { StateStore, vaultProfileKey } from "../src/state.ts";
 import { validateConfig, projectKey } from "../src/config.ts";
-import type { RunOptions } from "../src/process.ts";
+import { CommandUnavailableError, type RunOptions } from "../src/process.ts";
 import { modules, wizard, type Context } from "../src/wizard.ts";
 
 const uid = "11111111-1111-4111-8111-111111111111";
@@ -523,4 +523,104 @@ test("Wrangler official token stays in memory, validates target account and reje
     ),
     /身份.*变化/,
   );
+});
+
+test("official Cloudflare login offers Wrangler installation first and a decline keeps the old binding", async () => {
+  const original = { pagesProject: "fulcord-web" };
+  let commands = 0;
+  const asked: string[] = [];
+  const ctx: Context = {
+    root: "/fixture",
+    config,
+    env: "staging",
+    data: {
+      credentials: {},
+      profiles: { [projectKey("fulcord", "staging")]: { ...original } },
+    },
+    save: async () => {},
+    ui: {
+      select: async () => "official",
+      input: async () => assert.fail("profile prompt before Wrangler exists"),
+      confirm: async () => true,
+      check: async () => [],
+      log: () => {},
+    },
+    runner: async () => {
+      commands++;
+      return "";
+    },
+    ensureWrangler: async (root) => {
+      asked.push(root);
+      return false;
+    },
+  };
+  const result = await modules[0]!.actions
+    .find((action) => action.id === "account")!
+    .execute(ctx);
+  assert.deepEqual(result, { status: "cancelled" });
+  assert.deepEqual(asked, ["/fixture"]);
+  assert.equal(commands, 0);
+  assert.deepEqual(
+    ctx.data.profiles[projectKey("fulcord", "staging")],
+    original,
+  );
+});
+
+test("a bound Wrangler login that lost its CLI installs it on request and resumes the same operation", async () => {
+  let installed = false;
+  let installs = 0;
+  const ctx: Context = {
+    root: "/fixture",
+    config,
+    env: "staging",
+    data: {
+      credentials: {},
+      profiles: {
+        [projectKey("fulcord", "staging")]: {
+          "@cloudflareSource": "wrangler",
+          "@cloudflareProfile": "work",
+          "@cloudflareIdentity": "owner@example.test",
+          cloudflareAccountId: account,
+          pagesProject: "fulcord-web",
+        },
+      },
+    },
+    save: async () => {},
+    ui: {
+      select: async () => "",
+      input: async () => "fulcord-web",
+      confirm: async () => true,
+      check: async () => [],
+      log: () => {},
+    },
+    runner: async (command, args) => {
+      if (!installed) throw new CommandUnavailableError(command);
+      return args.includes("token")
+        ? JSON.stringify({ type: "oauth", token: "resumed-oauth" })
+        : JSON.stringify({
+            loggedIn: true,
+            email: "owner@example.test",
+            accounts: [{ id: account }],
+          });
+    },
+    ensureWrangler: async () => {
+      installs++;
+      installed = true;
+      return true;
+    },
+    fetcher: async (_url, init) => {
+      assert.equal(
+        (init?.headers as Record<string, string>).Authorization,
+        "Bearer resumed-oauth",
+      );
+      return Response.json({
+        success: true,
+        result: { name: "fulcord-web", production_branch: "main" },
+      });
+    },
+  };
+  await modules[0]!.actions
+    .find((action) => action.id === "pages")!
+    .execute(ctx);
+  assert.equal(installs, 1);
 });

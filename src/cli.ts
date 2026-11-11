@@ -68,6 +68,7 @@ async function main(): Promise<void> {
       ui,
       runner: tools.runner,
       ensureSupabaseCli: tools.ensureSupabaseCli,
+      ensureWrangler: tools.ensureWrangler,
       save: storage.save,
     });
   } finally {
