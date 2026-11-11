@@ -77,6 +77,57 @@ export type PagesProject = {
   subdomain: string;
   source?: unknown;
 };
+/** A public-only deployment projection; build env_vars are never retained. */
+export type PagesDeployment = {
+  id: string;
+  created_on: string;
+  environment: "preview" | "production";
+  branch: string;
+  latest_stage: { name: string; status: string };
+  url: string;
+  aliases: string[];
+  is_skipped: boolean;
+};
+function pagesDeployment(value: unknown): PagesDeployment {
+  const entry = value as Record<string, unknown> | null;
+  const stage = entry?.latest_stage as Record<string, unknown> | undefined;
+  const trigger = entry?.deployment_trigger as
+    | { metadata?: { branch?: unknown } }
+    | undefined;
+  const branch = trigger?.metadata?.branch;
+  if (
+    !entry ||
+    typeof entry.id !== "string" ||
+    !/^[A-Za-z0-9-]{1,128}$/.test(entry.id) ||
+    typeof entry.created_on !== "string" ||
+    !Number.isFinite(Date.parse(entry.created_on)) ||
+    !["production", "preview"].includes(String(entry.environment)) ||
+    typeof branch !== "string" ||
+    !branch ||
+    branch.length > 255 ||
+    /[\x00-\x1f\x7f]/.test(branch) ||
+    typeof stage?.name !== "string" ||
+    !/^[a-z_]{1,64}$/.test(stage.name) ||
+    typeof stage.status !== "string" ||
+    !/^[a-z_-]{1,64}$/.test(stage.status) ||
+    typeof entry.url !== "string" ||
+    (entry.aliases !== undefined &&
+      (!Array.isArray(entry.aliases) ||
+        !entry.aliases.every((alias) => typeof alias === "string"))) ||
+    (entry.is_skipped !== undefined && typeof entry.is_skipped !== "boolean")
+  )
+    throw new Error("Cloudflare 部署响应不合法；未认定应用已部署。");
+  return {
+    id: entry.id,
+    created_on: entry.created_on,
+    environment: entry.environment as PagesDeployment["environment"],
+    branch,
+    latest_stage: { name: stage.name, status: stage.status },
+    url: entry.url,
+    aliases: (entry.aliases ?? []) as string[],
+    is_skipped: entry.is_skipped === true,
+  };
+}
 function accountId(value: string): string {
   if (!/^[a-f0-9]{32}$/.test(value)) throw new Error("Account ID 格式无效。");
   return value;
@@ -139,6 +190,33 @@ export class Cloudflare {
       "POST",
       { name: resourceName(name), production_branch: "main" },
     );
+  }
+  async pagesDeployments(
+    account: string,
+    name: string,
+    options: { environment?: "preview" | "production" } = {},
+  ): Promise<PagesDeployment[]> {
+    if (
+      options.environment !== undefined &&
+      !["production", "preview"].includes(options.environment)
+    )
+      throw new Error("Pages 部署环境无效。");
+    const path = `/accounts/${accountId(account)}/pages/projects/${resourceName(name)}/deployments`;
+    const deployments: PagesDeployment[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const data = await this.api.request<CFResult<unknown[]>>(
+        `${path}?per_page=25&page=${page}${options.environment ? `&env=${options.environment}` : ""}`,
+      );
+      if (!data.success || !Array.isArray(data.result))
+        throw new Error("Cloudflare 部署列表不可用。");
+      const total = data.result_info?.total_pages;
+      if (total !== undefined && (!Number.isSafeInteger(total) || total < 0))
+        throw new Error("Cloudflare 部署分页响应不合法。");
+      deployments.push(...data.result.map(pagesDeployment));
+      if (total !== undefined ? page >= total : data.result.length < 25)
+        return deployments;
+    }
+    throw new Error("部署分页超过限制；请在 Cloudflare 控制台核对目标分支。");
   }
   async workerSubdomain(account: string): Promise<string | undefined> {
     const result = await this.result<{ subdomain?: string }>(

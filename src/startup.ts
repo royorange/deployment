@@ -101,8 +101,100 @@ async function chooseRoot(
   );
 }
 
+function awsTemplate(project: string): Config {
+  return {
+    version: 1,
+    project,
+    deploymentTopology: "aws-tunnel",
+    migrationStrategy: "supabase-cli",
+    environments: ["staging", "production"],
+    variables: {
+      cloudflareAccountId: "CF_ACCOUNT_ID",
+      cloudflareToken: "CLOUDFLARE_API_TOKEN",
+      appOrigin: "APP_ORIGIN",
+      cloudflareZoneId: "CF_ZONE_ID",
+      cloudflareTunnelId: "CF_TUNNEL_ID",
+      cloudflareTunnelToken: "CF_TUNNEL_TOKEN",
+      deploymentRuntime: "DEPLOYMENT_RUNTIME",
+      deploymentTarget: "DEPLOYMENT_ENVIRONMENT",
+      sshTarget: "DEPLOYMENT_SSH_TARGET",
+      remoteDirectory: "DEPLOYMENT_DIRECTORY",
+      deploymentImage: "DEPLOYMENT_IMAGE",
+      tunnelImage: "CLOUDFLARED_IMAGE",
+      syntheticFilesEnabled: "SYNTHETIC_FILES_ENABLED",
+      cleanupEnabled: "CLEANUP_ENABLED",
+      supabaseProjectRef: "SUPABASE_PROJECT_REF",
+      supabaseUrl: "SUPABASE_URL",
+      supabasePublishableKey: "SUPABASE_PUBLISHABLE_KEY",
+    },
+    defaults: Object.fromEntries(
+      ["staging", "production"].map((environment) => [
+        environment,
+        {
+          deploymentRuntime: "aws-tunnel",
+          deploymentTarget: environment,
+          remoteDirectory: `/opt/${project}/${environment}`,
+          syntheticFilesEnabled: "false",
+          cleanupEnabled: "false",
+        },
+      ]),
+    ),
+    setup: {
+      components: [
+        {
+          id: "app",
+          title: "整站应用",
+          kind: "web",
+          hosting: "aws",
+          originField: "appOrigin",
+          instructions:
+            "此自动路由模板要求容器服务 app 在端口 3000 监听（http://app:3000）；其他入口沿用项目流程，不直接应用该路由。核对运行时凭据、固定镜像与 Tunnel 路由。部署执行和回滚沿用项目脚本；主机预检成功不代表应用已发布。",
+        },
+      ],
+      requirements: [
+        {
+          id: "database-bootstrap",
+          title: "数据库业务初始化",
+          purpose: "确认迁移及运行时权限符合项目要求。",
+          instructions:
+            "先核对已有迁移账本再使用 CLI 预演；额外数据库角色、执行器连接串和 Storage 桶按项目文档配置。若已有项目自管账本，先修改 migrationStrategy，不能混用。",
+        },
+        {
+          id: "operations",
+          title: "持续运营准备",
+          purpose: "建立可恢复的部署与依赖验证流程。",
+          instructions:
+            "核对独立环境、日志、告警、后台任务、备份恢复、回滚和真实业务检查；只对项目实际启用的能力添加验证。",
+        },
+      ],
+    },
+    envExports: [
+      {
+        label: "AWS 公开部署配置",
+        path: ".project-setup/{environment}/deploy.env",
+        fields: [
+          "deploymentTarget",
+          "remoteDirectory",
+          "deploymentImage",
+          "tunnelImage",
+          "appOrigin",
+          "syntheticFilesEnabled",
+          "cleanupEnabled",
+        ],
+      },
+      {
+        label: "应用 Supabase 凭据",
+        path: ".project-setup/{environment}/app.env",
+        fields: ["supabaseUrl", "supabasePublishableKey"],
+      },
+    ],
+  };
+}
+
 async function initialize(root: string, options: Startup): Promise<Config> {
   const source = await options.ui.select("选择配置来源", [
+    { name: "快速起步：AWS 整站 Tunnel（app:3000）", value: "aws-tunnel" },
+    { name: "快速起步：独立前台 / 后台 / API", value: "separate-components" },
     { name: "zoncord 模板", value: "zoncord" },
     { name: "通用项目映射", value: "generic" },
     { name: "导入已有映射 JSON", value: "import" },
@@ -121,11 +213,41 @@ async function initialize(root: string, options: Startup): Promise<Config> {
       : resolve(options.cwd, path);
     return validateConfig(await readJson(expanded));
   }
-  if (source !== "generic") throw new Error("未知配置来源。");
+  if (!["generic", "aws-tunnel", "separate-components"].includes(source))
+    throw new Error("未知配置来源。");
   const project = await options.ui.input("项目名称（小写字母、数字、连字符）", {
     value: basename(root),
   });
   const repository = await options.ui.input("GitHub 仓库 owner/repo（可留空）");
+  if (source !== "generic") {
+    const auth = await options.ui.select("应用认证方式（独立于数据库服务）", [
+      { name: "Supabase Auth", value: "supabase" },
+      { name: "Firebase Auth", value: "firebase" },
+      { name: "其他认证服务 / 项目自管", value: "external" },
+      { name: "无需登录", value: "none" },
+    ]);
+    if (!["supabase", "firebase", "external", "none"].includes(auth))
+      throw new Error("未知认证方式。");
+    const template =
+      source === "aws-tunnel"
+        ? awsTemplate(project)
+        : validateConfig(
+            await readJson(
+              fileURLToPath(
+                new URL("../examples/shimau.json", import.meta.url),
+              ),
+            ),
+          );
+    return validateConfig({
+      ...template,
+      project,
+      ...(repository ? { repository } : {}),
+      setup: {
+        ...template.setup,
+        auth: auth as NonNullable<Config["setup"]>["auth"],
+      },
+    });
+  }
   return validateConfig({
     version: 1,
     project,

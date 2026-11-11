@@ -81,6 +81,41 @@ try {
   const restored = await prepareProject(options);
   assert.deepEqual(restored.config, first.config);
   assert.equal(answers.length, 0);
+  for (const template of ["aws-tunnel", "separate-components"]) {
+    const templateRoot = join(temp, template);
+    await mkdir(templateRoot);
+    const selections = [template, "firebase"];
+    const inputs = ["package-project", ""];
+    const result = await prepareProject({
+      ...options,
+      root: templateRoot,
+      memory: true,
+      ui: {
+        select: async (_message: string, choices: Array<{ value: string }>) => {
+          const answer = selections.shift();
+          assert.ok(choices.some((choice) => choice.value === answer));
+          return answer!;
+        },
+        input: async () => inputs.shift() ?? "",
+        log: () => {},
+      },
+    });
+    assert.equal(result.config.project, "package-project");
+    assert.equal(result.config.setup?.auth, "firebase");
+    assert.equal(
+      result.config.migrationStrategy,
+      template === "aws-tunnel" ? "supabase-cli" : "project-managed",
+    );
+    if (template === "separate-components") {
+      assert.equal(result.config.setup?.components?.length, 3);
+      assert.equal(
+        result.config.setup?.components?.[1]?.branchField,
+        "adminBranch",
+      );
+      assert.equal(result.config.deploymentTopology, undefined);
+    }
+    assert.equal(selections.length, 0);
+  }
   const passphrase = "synthetic package test passphrase";
   const storageOptions = {
     base: options.base,
@@ -112,7 +147,7 @@ try {
     ).includes("synthetic-package-pat"),
   );
   process.stdout.write(
-    "独立安装包验证通过：仓库外安装、编译 JS 入口、帮助、内置 zoncord 模板、无参数恢复与默认加密凭据重开。\n",
+    "独立安装包验证通过：仓库外安装、编译 JS 入口、帮助、内置 zoncord / AWS / 前后台 API 模板、无参数恢复与默认加密凭据重开。\n",
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
