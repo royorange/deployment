@@ -2,6 +2,7 @@ import { runLocalBuild } from "./release-build.ts";
 import { lifecycleMenu } from "./lifecycle-menu.ts";
 import { lifecycleAvailable } from "./lifecycle-engine.ts";
 import { deviceMenu } from "./device-menu.ts";
+import { switchEnvironmentDevice } from "./environment-device.ts";
 import { readReleaseCi } from "./release-ci.ts";
 import { openReleaseDevices, runReleaseFlow } from "./release-flow.ts";
 import { releaseCheckout } from "./release-preflight.ts";
@@ -19,7 +20,7 @@ export async function releaseMenu(ctx: Context): Promise<void> {
           : []),
         { name: "创建或配置 Tunnel / DNS / 连接 Token", value: "tunnel" },
         { name: "导入/导出统一 .env（可选）", value: "export" },
-        { name: "部署主机（保存 IP、用户名、端口）", value: "devices" },
+        { name: "部署主机：当前环境设备 / 登记管理", value: "devices" },
         { name: "构建产物 / 核验 CI", value: "ci" },
         { name: "返回主菜单", value: "back" },
       ],
@@ -31,7 +32,17 @@ export async function releaseMenu(ctx: Context): Promise<void> {
         continue;
       }
       if (selected === "devices") {
-        await deviceMenu({ ui: ctx.ui, store, runner: ctx.runner });
+        const action = await ctx.ui.select(
+          `${ctx.config.project} / ${ctx.env} — 部署主机`,
+          [
+            { name: `更换 ${ctx.env} 的部署设备`, value: "switch" },
+            { name: "登记 / 修改 / 删除设备档案", value: "manage" },
+            { name: "返回", value: "back" },
+          ],
+        );
+        if (action === "switch") await switchEnvironmentDevice(ctx, { store });
+        if (action === "manage")
+          await deviceMenu({ ui: ctx.ui, store, runner: ctx.runner });
         continue;
       }
       if (selected === "tunnel") {

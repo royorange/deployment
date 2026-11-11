@@ -13,7 +13,7 @@ git clone https://github.com/royorange/deployment.git
 cd deployment
 corepack pnpm install --frozen-lockfile
 corepack pnpm pack:local
-npm install -g .artifacts/royorange-project-setup-0.11.0.tgz
+npm install -g .artifacts/royorange-project-setup-0.12.0.tgz
 ```
 
 之后在项目目录或用户目录运行：
@@ -83,6 +83,15 @@ Pages 操作支持分别选择前台/后台组件，明确输入真实分支，�
 发布回执只含项目、环境、组件、SHA、设备标识、CI run 和阶段状态，默认保存在用户配置目录的 `releases` 下；内存模式仅在本次显示。迁移已完成但应用失败会保留数据库状态，不执行 down/reset/repair。项目适配器另行记录自己的发布与恢复证据。
 
 Fulcord 初始适配器只开放 staging，采用固定 digest 的 amd64 镜像、OCI revision 核验和独立候选目录；需主机具备 sudo -n、Docker Compose、严格 SSH 指纹、至少 768 MiB 可用内存与 4 GiB 可用磁盘，以及镜像仓库拉取权限。同一 SHA 的运行配置改变会拒绝复用该版本。合成文件/cleanup 暂不由此新发布适配器开放。以上是具体消费项目边界，不代表任意新项目已具备同样的发布脚本。
+
+## 按环境绑定与更换部署设备（0.12.0）
+
+设备档案全局复用，绑定按“项目 + 环境”保存，staging 与 production 可以分别指向不同主机。
+
+- “部署与发布 → 部署主机”先显示当前环境绑定，再选择“更换当前环境的部署设备”或“登记 / 修改 / 删除设备档案”。
+- 首次绑定未被占用的设备直接保存。更换已有绑定，或让 production 与同项目其他环境共用主机，都会先展示影响并默认要求确认；取消则保留原绑定。
+- 更换不会停止或迁移旧设备上的运行版本。若新旧设备使用同一 Tunnel 连接 Token，Cloudflare 会把请求分流到两台主机；新设备发布并核验通过后，在“运行状态”中选择“其他已登记设备”对旧主机执行停止。该临时选择不改变绑定，审计记录实际操作的设备。
+- 绑定变化使该环境此前的引导核验失效，需要重新发布并核验。
 
 ## 构建、恢复与CI容错（0.10.0）
 

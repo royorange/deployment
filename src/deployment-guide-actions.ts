@@ -3,6 +3,7 @@ import { authCallbacks } from "./auth-callbacks.ts";
 import { selectDevice } from "./device-menu.ts";
 import type { Device, DeviceStore } from "./devices.ts";
 import type { GuideOperationResult } from "./deployment-wizard.ts";
+import { bindEnvironmentDevice } from "./environment-device.ts";
 import type {
   GuideProgress,
   GuideStage,
@@ -129,8 +130,9 @@ export async function performGuideStage(
       store: options.devices,
       runner: ctx.runner,
     });
+    if (device && !(await bindEnvironmentDevice(ctx, device, options.devices)))
+      return { outcome: { status: "cancelled" } };
     if (device) {
-      values(ctx)["@releaseDeviceId"] = device.id;
       if (Object.hasOwn(ctx.config.variables, "sshTarget")) {
         try {
           values(ctx).sshTarget = validateField(

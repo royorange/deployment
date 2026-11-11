@@ -1,6 +1,7 @@
 import type { LifecycleOutput } from "./lifecycle-protocol.ts";
 import { selectDevice } from "./device-menu.ts";
-import type { DeviceStore } from "./devices.ts";
+import type { Device, DeviceStore } from "./devices.ts";
+import { bindEnvironmentDevice, DEVICE_BINDING } from "./environment-device.ts";
 import {
   createLifecycleController,
   lifecycleAvailable,
@@ -12,6 +13,59 @@ function interrupted(error: unknown): boolean {
     error instanceof Error &&
     ["ExitPromptError", "AbortPromptError"].includes(error.name)
   );
+}
+/**
+ * Uses the bound device by default. When other devices are registered, the
+ * operator may act on one of them once (for example to stop a replaced host)
+ * without changing the environment binding.
+ */
+async function lifecycleDevice(
+  ctx: Context,
+  store: DeviceStore,
+): Promise<Device | undefined> {
+  const saved = values(ctx)[DEVICE_BINDING];
+  const menu = { ui: ctx.ui, store, runner: ctx.runner };
+  if (!saved) {
+    const device = await selectDevice(menu);
+    if (!device) {
+      ctx.ui.log("已取消选择设备。");
+      return undefined;
+    }
+    return (await bindEnvironmentDevice(ctx, device, store))
+      ? device
+      : undefined;
+  }
+  const bound = store.read(saved);
+  if (!bound) {
+    ctx.ui.log(
+      "已保存的部署设备档案缺失；请重新登记或选择设备，不会改用其他主机。",
+    );
+    return undefined;
+  }
+  if (!store.list().some((device) => device.id !== bound.id)) return bound;
+  const choice = await ctx.ui.select(
+    `${ctx.config.project}/${ctx.env} · 选择要操作的设备`,
+    [
+      { name: `当前绑定设备：${bound.label}`, value: "bound" },
+      {
+        name: "其他已登记设备（仅本次，不改变绑定；例如停止被替换的旧主机）",
+        value: "other",
+      },
+      { name: "返回", value: "back" },
+    ],
+  );
+  if (choice === "bound") return bound;
+  if (choice !== "other") return undefined;
+  const device = await selectDevice(menu);
+  if (!device) {
+    ctx.ui.log("已取消选择设备。");
+    return undefined;
+  }
+  if (device.id !== bound.id)
+    ctx.ui.log(
+      `仅本次操作 ${device.label}；${ctx.config.project}/${ctx.env} 的部署绑定仍为 ${bound.label}。`,
+    );
+  return device;
 }
 export async function lifecycleMenu(
   ctx: Context,
@@ -32,23 +86,9 @@ export async function lifecycleMenu(
           { name: "返回", value: "back" },
         ]);
   if (componentId === "back") return;
-  const store = options.store ?? (await openReleaseDevices(ctx)),
-    saved = values(ctx)["@releaseDeviceId"];
-  const device = saved
-    ? store.read(saved)
-    : await selectDevice({ ui: ctx.ui, store, runner: ctx.runner });
-  if (!device) {
-    ctx.ui.log(
-      saved
-        ? "已保存的部署设备档案缺失；请重新登记或选择设备，不会改用其他主机。"
-        : "已取消选择设备。",
-    );
-    return;
-  }
-  if (!saved) {
-    values(ctx)["@releaseDeviceId"] = device.id;
-    await ctx.save();
-  }
+  const store = options.store ?? (await openReleaseDevices(ctx));
+  const device = await lifecycleDevice(ctx, store);
+  if (!device) return;
   let controller;
   try {
     controller = await createLifecycleController(ctx, componentId, device);

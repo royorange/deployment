@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectDevice } from "./device-menu.ts";
 import { DeviceStore, type Device } from "./devices.ts";
+import { bindEnvironmentDevice } from "./environment-device.ts";
 import { runRelease, type ReleaseReceipt } from "./release-engine.ts";
 import { safeMessage, values, type Context } from "./wizard.ts";
 
@@ -129,7 +130,8 @@ export async function runReleaseFlow(
         );
       } else {
         device = await selectDevice({ ui: ctx.ui, store, runner: ctx.runner });
-        if (!device) return result("cancelled");
+        if (!device || !(await bindEnvironmentDevice(ctx, device, store)))
+          return result("cancelled");
       }
       if (values(ctx)["@releaseDeviceId"] !== device.id) {
         values(ctx)["@releaseDeviceId"] = device.id;
