@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "project": "fulcord",
+  "repository": "royorange/fulcord",
+  "deploymentTopology": "aws-tunnel",
+  "migrationStrategy": "supabase-cli",
+  "environments": ["staging", "production"],
+  "githubSecrets": ["supabaseUrl"],
+  "variables": {
+    "cloudflareAccountId": "CF_ACCOUNT_ID",
+    "cloudflareToken": "CLOUDFLARE_API_TOKEN",
+    "pagesProject": "CF_PAGES_PROJECT",
+    "workerName": "CF_WORKER_NAME",
+    "siteOrigin": "FULCORD_SITE_ORIGIN",
+    "appOrigin": "FULCORD_APP_ORIGIN",
+    "supabaseUrl": "SUPABASE_URL",
+    "supabasePublishableKey": "SUPABASE_PUBLISHABLE_KEY",
+    "supabaseProjectRef": "SUPABASE_PROJECT_REF",
+    "supabaseCleanupKey": "SUPABASE_CLEANUP_KEY",
+    "cloudflareZoneId": "CF_ZONE_ID",
+    "cloudflareTunnelId": "CF_TUNNEL_ID",
+    "cloudflareTunnelToken": "CF_TUNNEL_TOKEN",
+    "deploymentRuntime": "FULCORD_DEPLOYMENT_RUNTIME",
+    "deploymentTarget": "FULCORD_ENVIRONMENT",
+    "sshTarget": "FULCORD_SSH_TARGET",
+    "remoteDirectory": "FULCORD_DEPLOY_DIR",
+    "deploymentImage": "FULCORD_IMAGE",
+    "tunnelImage": "CLOUDFLARED_IMAGE",
+    "syntheticFilesEnabled": "FULCORD_SYNTHETIC_FILES_ENABLED",
+    "cleanupEnabled": "FULCORD_CLEANUP_ENABLED"
+  },
+  "defaults": {
+    "staging": {
+      "pagesProject": "fulcord-web",
+      "workerName": "fulcord-app-staging",
+      "siteOrigin": "https://staging.fulcord-web.pages.dev",
+      "appOrigin": "https://app-staging.fulcord.com",
+      "deploymentRuntime": "aws-tunnel",
+      "deploymentTarget": "staging",
+      "remoteDirectory": "/opt/fulcord/staging",
+      "syntheticFilesEnabled": "false",
+      "cleanupEnabled": "false"
+    },
+    "production": {
+      "deploymentRuntime": "aws-tunnel",
+      "deploymentTarget": "production",
+      "syntheticFilesEnabled": "false",
+      "cleanupEnabled": "false"
+    }
+  },
+  "envExports": [
+    {
+      "label": "Fulcord 应用配置（部署环境；不用于 localhost）",
+      "path": "apps/web/.env.local",
+      "fields": ["supabaseUrl", "supabasePublishableKey", "appOrigin"]
+    },
+    {
+      "label": "Cloudflare 部署公开配置（可传 --env-file）",
+      "path": "deploy/.env.{environment}",
+      "fields": [
+        "cloudflareAccountId",
+        "pagesProject",
+        "workerName",
+        "siteOrigin",
+        "appOrigin"
+      ]
+    },
+    {
+      "label": "AWS 应用独立运行凭据（仅应用，不含清理 Key）",
+      "path": ".fulcord/aws/{environment}/app.env",
+      "fields": ["supabaseUrl", "supabasePublishableKey"]
+    },
+    {
+      "label": "AWS 独立清理凭据（仅清理进程）",
+      "path": ".fulcord/aws/{environment}/cleanup.env",
+      "fields": ["supabaseUrl", "supabaseCleanupKey"]
+    },
+    {
+      "label": "AWS Compose 公开部署配置（不包含凭据）",
+      "path": ".fulcord/aws/{environment}/deploy.env",
+      "fields": [
+        "deploymentTarget",
+        "remoteDirectory",
+        "deploymentImage",
+        "tunnelImage",
+        "appOrigin",
+        "syntheticFilesEnabled",
+        "cleanupEnabled"
+      ]
+    },
+    {
+      "label": "仅 Pages 落地页公开配置（AWS 应用入口）",
+      "path": ".fulcord/aws/{environment}/pages.env",
+      "fields": [
+        "cloudflareAccountId",
+        "pagesProject",
+        "siteOrigin",
+        "appOrigin"
+      ]
+    }
+  ]
+}
